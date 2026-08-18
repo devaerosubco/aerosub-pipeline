@@ -1,0 +1,99 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Aerosub Research</title>
+<style>
+  :root{
+    --navy:#0C1F61; --blue:#00A3DE; --warm:#FFBC7D;
+    --ink:#1B1B1B; --muted:#5a6472; --line:#e4e8f0; --mist:#F4F7FC;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; width:360px; font-family:-apple-system,"Segoe UI",Arial,sans-serif;
+    color:var(--ink); background:#fff; font-size:12.5px;
+  }
+  .head{ background:var(--navy); color:#fff; padding:12px 14px; }
+  .head .brand{ font-weight:700; letter-spacing:.05em; font-size:12px; }
+  .head .sub{ font-size:10.5px; color:#b7c6e6; margin-top:2px; }
+  .tabs{ display:flex; border-bottom:1px solid var(--line); }
+  .tab{ flex:1; padding:9px 0; text-align:center; font-size:11.5px; font-weight:600; color:var(--muted); cursor:pointer; border-bottom:2px solid transparent; background:none; border-top:none; border-left:none; border-right:none; }
+  .tab.active{ color:var(--navy); border-bottom-color:var(--blue); }
+  .panel{ display:none; padding:12px 14px 14px; }
+  .panel.active{ display:block; }
+  label{ display:block; font-size:10.5px; font-weight:700; color:var(--muted); margin:8px 0 3px; text-transform:uppercase; letter-spacing:.03em; }
+  input, textarea{
+    width:100%; padding:7px 9px; border:1px solid #d7deea; border-radius:6px; font-size:12px;
+    font-family:inherit; color:var(--ink); background:#fbfcfe;
+  }
+  textarea{ resize:vertical; min-height:44px; }
+  .row2{ display:flex; gap:8px; }
+  .row2 > div{ flex:1; }
+  .btn{
+    width:100%; padding:9px 0; border-radius:7px; border:1px solid var(--navy); background:var(--navy); color:#fff;
+    font-size:12.5px; font-weight:700; cursor:pointer; margin-top:12px;
+  }
+  .btn:hover{ background:#0a1a52; }
+  .btn.ghost{ background:#fff; color:var(--navy); }
+  .btn.ghost:hover{ background:var(--mist); }
+  .btn.small{ width:auto; padding:5px 10px; font-size:11px; margin-top:0; }
+  .status{ font-size:11px; color:var(--muted); margin-top:8px; min-height:14px; }
+  .status.ok{ color:#1c7a52; }
+  .count-row{ display:flex; align-items:center; justify-content:space-between; margin-top:10px; }
+  .count-row .n{ font-size:11.5px; color:var(--muted); }
+  .clip-list{ max-height:230px; overflow-y:auto; margin-top:8px; }
+  .clip{ border:1px solid var(--line); border-radius:7px; padding:8px 9px; margin-bottom:6px; position:relative; }
+  .clip .t{ font-size:11.5px; font-weight:700; padding-right:18px; }
+  .clip .u{ font-size:10px; color:var(--muted); word-break:break-all; margin-top:2px; }
+  .clip .del{ position:absolute; top:6px; right:7px; background:none; border:none; color:#a5adba; cursor:pointer; font-size:13px; line-height:1; }
+  .empty{ text-align:center; color:var(--muted); font-size:11px; padding:16px 0; }
+  .footer-actions{ display:flex; gap:8px; margin-top:10px; }
+  .footer-actions .btn{ margin-top:0; }
+</style>
+</head>
+<body>
+  <div class="head">
+    <div class="brand">AEROSUB RESEARCH</div>
+    <div class="sub">Clip the web into your Pipeline</div>
+  </div>
+  <div class="tabs">
+    <button class="tab active" data-tab="capture">Capture</button>
+    <button class="tab" data-tab="saved">Saved <span id="savedCount"></span></button>
+  </div>
+
+  <div class="panel active" id="panel-capture">
+    <label>Page title</label>
+    <input id="title" placeholder="Loading current tab…">
+    <label>URL</label>
+    <input id="url" placeholder="">
+    <label>Brief summary</label>
+    <textarea id="summary" placeholder="What is this page about?"></textarea>
+    <label>Potential for Aerosub</label>
+    <textarea id="potential" placeholder="Opportunity, risk, competitor move…"></textarea>
+    <label>Key contact (optional)</label>
+    <input id="contactName" placeholder="Name">
+    <div class="row2">
+      <div><input id="contactEmail" placeholder="Email"></div>
+      <div><input id="contactPhone" placeholder="Phone"></div>
+    </div>
+    <input id="contactLinkedin" placeholder="LinkedIn (e.g. linkedin.com/in/…)" style="margin-top:8px;">
+    <button class="btn" id="saveBtn">Save to Research</button>
+    <div class="status" id="status"></div>
+  </div>
+
+  <div class="panel" id="panel-saved">
+    <div class="count-row">
+      <span class="n"><span id="savedCount2">0</span> clip(s) waiting to be imported</span>
+    </div>
+    <div class="clip-list" id="clipList"></div>
+    <div class="footer-actions">
+      <button class="btn ghost small" id="copyBtn" style="flex:1;">Copy JSON</button>
+      <button class="btn small" id="exportBtn" style="flex:1;">Export .json</button>
+    </div>
+    <div class="status" id="status2">Import the exported file from the Research tab in the Aerosub Pipeline app (“Import clips”).</div>
+    <button class="btn ghost small" id="clearBtn" style="width:100%;margin-top:8px;">Clear all saved clips</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
