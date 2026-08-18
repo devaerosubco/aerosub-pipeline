@@ -1444,6 +1444,10 @@ const Store = {
         if (cp.verdict===undefined) cp.verdict = 'watch';
       });
     });
+    d.team.forEach(t=>{
+      if (t.email===undefined) t.email = '';
+      if (t.passcode===undefined) t.passcode = '';
+    });
     d.events.forEach(ev=>{
       if (!Array.isArray(ev.benefits)) ev.benefits = [];
       if (!Array.isArray(ev.attendees)) ev.attendees = [];
@@ -1476,6 +1480,7 @@ const ui = {
   tickerPaused:false,
   reportCompanyId:null,
   reportSections:{profile:true, pain:true, current:true, recommended:true, contacts:true, notes:false},
+  showTeamCodes:false,
 };
 
 let DATA = Store.load();
@@ -3216,6 +3221,15 @@ function currentUserName(){
 function setCurrentUserName(name){
   try{ localStorage.setItem('aerosub_current_user', name); }catch(e){}
 }
+function teamHasIndividualLogins(){
+  return DATA.team.some(t=>t.name && t.passcode);
+}
+function genPasscode(){
+  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O/1/I — easy to read aloud/type
+  let out = '';
+  for (let i=0;i<6;i++) out += chars[Math.floor(Math.random()*chars.length)];
+  return out;
+}
 function logActivity(action, detail){
   if (!DATA || !Array.isArray(DATA.activityLog)) return;
   DATA.activityLog.unshift({
@@ -3232,14 +3246,14 @@ function renderSettings(){
     <div class="card panel">
       <h3>Access</h3>
       <div class="settings-note">
-        <b>What this actually does:</b> the access code below is a shared passphrase stored in this page's own source —
-        it keeps casual link-openers out, but it is <b>not real per-user security</b>: anyone who can view the page source can read it,
-        and there's no server checking it. Data lives in <b>this browser only</b> and does not sync between teammates — each person who
-        opens this tool has their own separate copy, so "team" here means everyone working from the same exported/imported file, not shared live data.
-        The name field below is local attribution for the activity log, nothing more. Real shared data with server-enforced
-        permissions would need an actual backend — a bigger project than this file can be.
+        <b>What this actually does:</b> ${teamHasIndividualLogins()
+          ? 'each team member below with a passcode logs in with their own code, so the activity log identifies them automatically — no separate name prompt needed.'
+          : 'no one has a personal passcode yet, so anyone with the shared code below gets in and just types their name.'}
+        None of this is real per-user security — it is enforced entirely in this page's own JavaScript, so anyone who opens the browser's dev tools can read the codes or bypass the check, and there's no server verifying anything.
+        Data lives in <b>this browser only</b> and does not sync between teammates — each person who opens this tool has their own separate copy, so "team" here
+        means everyone working from the same exported/imported file, not shared live data. Real shared data with server-enforced permissions would need an actual backend.
       </div>
-      <div class="field"><label>Access code (leave blank to disable the gate)</label><input id="accessCodeInput" value="${esc(DATA.settings.accessCode||'')}" placeholder="e.g. aerosub2027"></div>
+      <div class="field"><label>Shared team code <span style="font-weight:400;color:var(--muted);">(fallback for anyone without a personal passcode — leave blank to disable)</span></label><input id="accessCodeInput" value="${esc(DATA.settings.accessCode||'')}" placeholder="e.g. aerosub2027"></div>
       <div class="field"><label>Your name (remembered in this browser only)</label><input id="myNameInput" value="${esc(currentUserName())}" placeholder="e.g. Jane Doe"></div>
       <button class="btn btn-primary btn-sm" id="saveAccessBtn">Save</button>
     </div>
@@ -3247,11 +3261,16 @@ function renderSettings(){
     <div class="card panel">
       <div class="row" style="justify-content:space-between;margin-bottom:12px;">
         <h3 style="margin-bottom:0;">Team & permissions</h3>
-        <button class="btn btn-sm btn-primary" id="addTeamBtn">${ICONS.plus} Add person</button>
+        <div class="row" style="gap:12px;">
+          <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted);cursor:pointer;">
+            <input type="checkbox" id="toggleCodesChk" ${ui.showTeamCodes?'checked':''}> Show passcodes
+          </label>
+          <button class="btn btn-sm btn-primary" id="addTeamBtn">${ICONS.plus} Add person</button>
+        </div>
       </div>
       <div class="tablewrap">
         <table>
-          <thead><tr><th>Name</th><th>Email</th><th>Department</th><th>Permission</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Email</th><th>Department</th><th>Permission</th><th>Passcode</th><th></th></tr></thead>
           <tbody>
             ${namedTeam.map(t=>`
               <tr>
@@ -3259,6 +3278,12 @@ function renderSettings(){
                 <td>${t.email?esc(t.email):'<span class="sub">—</span>'}</td>
                 <td><span class="chip chip-teal">${esc(t.department)}</span></td>
                 <td><span class="chip ${t.permission==='Admin'?'chip-high':t.permission==='Editor'?'chip-medium':'chip-low'}">${esc(t.permission)}</span></td>
+                <td>
+                  ${t.passcode
+                    ? `<span style="font-family:var(--font-mono);letter-spacing:.05em;">${ui.showTeamCodes?esc(t.passcode):'••••••'}</span>
+                       <button class="btn btn-sm" data-regen-team="${t.id}" style="margin-left:6px;" title="Generate a new code for them">↻</button>`
+                    : `<button class="btn btn-sm" data-regen-team="${t.id}">Set code</button>`}
+                </td>
                 <td><button class="x" data-del-team="${t.id}" style="background:none;border:none;color:var(--faint);cursor:pointer;">${ICONS.x}</button></td>
               </tr>
             `).join('')}
@@ -3305,8 +3330,25 @@ function bindSettingsControls(){
     persist(); renderApp(); toast('Settings saved');
   });
   document.getElementById('addTeamBtn').addEventListener('click', openAddTeamModal);
+  document.getElementById('toggleCodesChk').addEventListener('change', e=>{ ui.showTeamCodes = e.target.checked; renderView(); });
   document.querySelectorAll('[data-del-team]').forEach(b=>b.addEventListener('click', ()=>{
     DATA.team = DATA.team.filter(t=>t.id!==b.dataset.delTeam); persist(); renderView();
+  }));
+  document.querySelectorAll('[data-regen-team]').forEach(b=>b.addEventListener('click', ()=>{
+    const t = DATA.team.find(x=>x.id===b.dataset.regenTeam);
+    if (!t) return;
+    const doRegen = ()=>{
+      let code;
+      do { code = genPasscode(); } while (DATA.team.some(x=>x.id!==t.id && x.passcode===code));
+      t.passcode = code;
+      persist(); ui.showTeamCodes = true; renderView();
+      toast(`${t.name}'s new passcode is ${code} — share it with them, their old code stops working now`);
+    };
+    if (t.passcode){
+      openConfirmModal(`Generate a new passcode for ${t.name}? Their current code will stop working immediately.`, doRegen, 'Generate new code');
+    } else {
+      doRegen();
+    }
   }));
   document.getElementById('addConnectorBtn').addEventListener('click', openAddConnectorModal);
   document.querySelectorAll('[data-del-connector]').forEach(b=>b.addEventListener('click', ()=>{
@@ -3325,17 +3367,30 @@ function openAddTeamModal(){
     <div class="field"><label>Email</label><input id="mEmail"></div>
     <div class="field"><label>Department</label><select id="mDept">${DEPARTMENTS.map(d=>`<option value="${d}">${d}</option>`).join('')}</select></div>
     <div class="field"><label>Permission</label><select id="mPerm">${PERMISSIONS.map(p=>`<option value="${p}">${p}</option>`).join('')}</select></div>
+    <div class="field">
+      <label>Personal passcode <span style="font-weight:400;color:var(--muted);">(their individual login — share it with them directly)</span></label>
+      <div class="row" style="gap:6px;">
+        <input id="mPass" value="${esc(genPasscode())}" style="font-family:var(--font-mono);letter-spacing:.05em;">
+        <button class="btn btn-sm" id="mPassRegen" type="button" title="Generate a new code">${ICONS.refresh||'↻'}</button>
+      </div>
+    </div>
     <div class="modal-actions">
       <button class="btn" id="mCancel">Cancel</button>
       <button class="btn btn-primary" id="mSave">Add</button>
     </div>
   `, body=>{
     body.querySelector('#mCancel').onclick = closeModal;
+    body.querySelector('#mPassRegen').onclick = ()=>{ body.querySelector('#mPass').value = genPasscode(); };
     body.querySelector('#mSave').onclick = ()=>{
       const name = body.querySelector('#mName').value.trim();
       if (!name){ toast('Name required'); return; }
-      DATA.team.push({id:'u'+Date.now(), name, email: body.querySelector('#mEmail').value.trim(), department: body.querySelector('#mDept').value, permission: body.querySelector('#mPerm').value});
-      persist(); closeModal(); renderView(); logActivity('Added a team member', name); toast('Team member added');
+      const passcode = body.querySelector('#mPass').value.trim();
+      if (passcode && DATA.team.some(t=>t.passcode && t.passcode===passcode)){
+        toast('That passcode is already assigned to someone else — generate a new one'); return;
+      }
+      DATA.team.push({id:'u'+Date.now(), name, email: body.querySelector('#mEmail').value.trim(), department: body.querySelector('#mDept').value, permission: body.querySelector('#mPerm').value, passcode});
+      persist(); closeModal(); renderView(); logActivity('Added a team member', name);
+      toast(passcode ? `Added — their passcode is ${passcode}` : 'Team member added');
     };
   });
 }
@@ -3364,37 +3419,49 @@ function openAddConnectorModal(){
 /* ---------- boot-time gate + one-time attribution prompt ---------- */
 function renderGate(){
   const app = document.getElementById('app');
+  const individual = teamHasIndividualLogins();
   app.innerHTML = `
     <div class="gate-wrap">
       <div class="gate-card">
         <div class="gate-brand">AEROSUB</div>
         <h2>Team access</h2>
-        <p>This is a shared internal tool. Enter the access code your admin shared with you, and your name so actions can be attributed to you in the activity log.</p>
-        <div class="field"><label>Access code</label><input id="gateCode" type="password"></div>
-        <div class="field"><label>Your name</label><input id="gateName" placeholder="e.g. Jane Doe" list="teamNames"></div>
+        <p>${individual
+          ? "This is a shared internal tool. Enter your personal passcode to sign in — if you don't have one yet, ask your admin, or use the shared team code and your name below."
+          : "This is a shared internal tool. Enter the access code your admin shared with you, and your name so actions can be attributed to you in the activity log."}</p>
+        <div class="field"><label>Passcode</label><input id="gateCode" type="password"></div>
+        <div class="field"><label>Your name ${individual?'<span style="font-weight:400;color:var(--muted);">(only needed with the shared team code)</span>':''}</label><input id="gateName" placeholder="e.g. Jane Doe" list="teamNames"></div>
         <datalist id="teamNames">${DATA.team.filter(t=>t.name).map(t=>`<option value="${esc(t.name)}">`).join('')}</datalist>
         <button class="btn btn-primary" id="gateSubmit" style="width:100%;justify-content:center;">Enter</button>
         <div class="status" id="gateStatus" style="min-height:16px;color:var(--critical);font-size:11.5px;margin-top:8px;"></div>
-        <p class="gate-note">This code only keeps out casual visitors — it isn't real per-user security, and it's visible to anyone who views this page's source. Data stays in this browser and does not sync between teammates.</p>
+        <p class="gate-note">This only keeps out casual visitors — it isn't real per-user security, and it's visible to anyone who views this page's source. Data stays in this browser and does not sync between teammates.</p>
       </div>
     </div>
   `;
   const submit = ()=>{
     const code = document.getElementById('gateCode').value;
-    const name = document.getElementById('gateName').value.trim();
-    if (code !== DATA.settings.accessCode){ document.getElementById('gateStatus').textContent = 'Incorrect code.'; return; }
-    if (!name){ document.getElementById('gateStatus').textContent = 'Enter your name to continue.'; return; }
-    try{ sessionStorage.setItem('aerosub_unlocked','true'); }catch(e){}
-    setCurrentUserName(name);
-    logActivity('Signed in');
-    renderApp();
+    const typedName = document.getElementById('gateName').value.trim();
+    const status = document.getElementById('gateStatus');
+    const member = code ? DATA.team.find(t=>t.name && t.passcode && t.passcode===code) : null;
+    const unlockAs = name=>{
+      try{ sessionStorage.setItem('aerosub_unlocked','true'); }catch(e){}
+      setCurrentUserName(name);
+      logActivity('Signed in');
+      renderApp();
+    };
+    if (member){ unlockAs(member.name); return; }
+    if (DATA.settings.accessCode && code === DATA.settings.accessCode){
+      if (!typedName){ status.textContent = 'Enter your name to continue.'; return; }
+      unlockAs(typedName);
+      return;
+    }
+    status.textContent = individual ? 'Incorrect passcode.' : 'Incorrect code.';
   };
   document.getElementById('gateSubmit').addEventListener('click', submit);
   document.getElementById('gateName').addEventListener('keydown', e=>{ if (e.key==='Enter') submit(); });
   document.getElementById('gateCode').addEventListener('keydown', e=>{ if (e.key==='Enter') submit(); });
 }
 function isUnlocked(){
-  if (!DATA.settings.accessCode) return true;
+  if (!DATA.settings.accessCode && !teamHasIndividualLogins()) return true;
   try{ return sessionStorage.getItem('aerosub_unlocked')==='true'; }catch(e){ return false; }
 }
 function maybePromptForName(){
