@@ -5,6 +5,9 @@ import {
   SIGNUP_FAILED_MESSAGE,
 } from './auth.js';
 import * as invitesApi from './api/invites.js';
+import * as store from './store.js';
+import * as companiesApi from './api/companies.js';
+import * as newsApi from './api/news.js';
 
 /* ============================================================
    ICONS (tiny inline SVGs)
@@ -95,45 +98,11 @@ const BRAND = {
   site:'aerosub.co',
 };
 
-/* LIVE_NEWS_SNAPSHOT_START
-   Populated by the scheduled RSS-refresh cloud routine — do not hand-edit expecting
-   changes to persist for existing users; see mergeLiveNewsSnapshot() below for how
-   a new snapshot reaches a browser that already has local data. Keep this block's
-   START/END markers and the exact `const LIVE_NEWS_SNAPSHOT = {...};` shape intact
-   so the automated routine can find and replace it reliably. */
-const LIVE_NEWS_SNAPSHOT = {
-  refreshedAt: '',
-  items: [
-    // {id, title, source, url, date, kind, refId}
-  ]
-};
-/* LIVE_NEWS_SNAPSHOT_END */
-
-// Merges freshly-fetched RSS items from LIVE_NEWS_SNAPSHOT into DATA.news. Safe to call
-// on every load: skips any item id already present or already in dismissedNewsIds, so a
-// redeployed snapshot never duplicates an existing item or resurrects one the user deleted.
-function mergeLiveNewsSnapshot(d){
-  if (!LIVE_NEWS_SNAPSHOT.items.length) return false;
-  if (!Array.isArray(d.news)) d.news = [];
-  if (!Array.isArray(d.dismissedNewsIds)) d.dismissedNewsIds = [];
-  const existingIds = new Set(d.news.map(n=>n.id));
-  const dismissed = new Set(d.dismissedNewsIds);
-  let changed = false;
-  LIVE_NEWS_SNAPSHOT.items.forEach(item=>{
-    if (existingIds.has(item.id) || dismissed.has(item.id)) return;
-    d.news.push({...item, live:true});
-    existingIds.add(item.id);
-    changed = true;
-  });
-  if (LIVE_NEWS_SNAPSHOT.refreshedAt){
-    if (!d.settings) d.settings = {accessCode:'', connectors:[]};
-    if (d.settings.lastNewsRefresh !== LIVE_NEWS_SNAPSHOT.refreshedAt){
-      d.settings.lastNewsRefresh = LIVE_NEWS_SNAPSHOT.refreshedAt;
-      changed = true;
-    }
-  }
-  return changed;
-}
+// D-12: the LIVE_NEWS_SNAPSHOT marker block, mergeLiveNewsSnapshot(), and the
+// dismissedNewsIds array (formerly here) are gone — Postgres is the source of
+// news now (src/store.js, src/api/news.js), and dismissal is team-wide via
+// news_items.dismissed_at (D-5). A V2 news-feed job would write news_items
+// directly (PRD §12), not this block.
 
 
 /* ============================================================
@@ -633,86 +602,13 @@ function seedData(){
 
 /* ============================================================
    STORE
+   HT4: the old localStorage `Store` (load/migrate/save) is gone — Supabase
+   is DATA's source of truth now (src/store.js's loadAll(), called from
+   enterApp() once a session + profile are confirmed). `seedData()` above
+   stays only as the source scripts/gen-seed-source.mjs slices to regenerate
+   supabase/seed.sql if the baseline data ever changes; it is not called at
+   runtime and is dropped from the production bundle (dead-code elimination).
    ============================================================ */
-const STORAGE_KEY = 'aerosub_pipeline_v1';
-const Store = {
-  data: null,
-  load(){
-    try{
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw){
-        this.data = JSON.parse(raw);
-        this.migrate();
-        return this.data;
-      }
-    }catch(e){}
-    this.data = seedData();
-    mergeLiveNewsSnapshot(this.data);
-    this.save();
-    return this.data;
-  },
-  // Backfills fields added after a user's data was first saved, so returning
-  // users never hit an "undefined.length"-style crash on load. Never touches
-  // anything the user already has — only adds what's genuinely missing.
-  migrate(){
-    const d = this.data;
-    if (!Array.isArray(d.companies)) d.companies = [];
-    if (!Array.isArray(d.tasks)) d.tasks = [];
-    if (!Array.isArray(d.solutions)) d.solutions = SOLUTIONS.map(s=>({...s}));
-    const needsFreshSeed = !Array.isArray(d.competitors) || !Array.isArray(d.news) || !Array.isArray(d.research)
-      || !Array.isArray(d.events) || !Array.isArray(d.team) || !Array.isArray(d.activityLog);
-    if (needsFreshSeed){
-      const fresh = seedData();
-      if (!Array.isArray(d.competitors)) d.competitors = fresh.competitors;
-      if (!Array.isArray(d.news)) d.news = fresh.news;
-      if (!Array.isArray(d.research)) d.research = fresh.research;
-      if (!Array.isArray(d.events)) d.events = fresh.events;
-      if (!Array.isArray(d.team)) d.team = fresh.team;
-      if (!Array.isArray(d.activityLog)) d.activityLog = fresh.activityLog;
-      if (!d.settings) d.settings = fresh.settings;
-    }
-    if (!d.settings) d.settings = {accessCode:'', connectors:[]};
-    if (!Array.isArray(d.settings.connectors)) d.settings.connectors = [];
-    if (!Array.isArray(d.dismissedNewsIds)) d.dismissedNewsIds = [];
-    if (d.settings.lastNewsRefresh===undefined) d.settings.lastNewsRefresh = '';
-    d.news.forEach(n=>{ if (n.live===undefined) n.live = false; });
-    d.companies.forEach(c=>{
-      if (!Array.isArray(c.flags)) c.flags = [];
-      if (!Array.isArray(c.recommended)) c.recommended = [];
-      if (!Array.isArray(c.contacts)) c.contacts = [];
-      if (!Array.isArray(c.painPoints)) c.painPoints = [];
-      if (!Array.isArray(c.currentSolutions)) c.currentSolutions = [];
-    });
-    d.solutions.forEach(s=>{
-      if (!s.kind) s.kind = 'Product';
-      if (!s.status) s.status = 'Active';
-      if (!Array.isArray(s.highlights)) s.highlights = [];
-    });
-    d.competitors.forEach(co=>{
-      (co.campaigns||[]).forEach(cp=>{
-        if (cp.performance===undefined) cp.performance = '';
-        if (cp.gap===undefined) cp.gap = '';
-        if (cp.sweetSpot===undefined) cp.sweetSpot = '';
-        if (cp.verdict===undefined) cp.verdict = 'watch';
-      });
-    });
-    d.team.forEach(t=>{
-      if (t.email===undefined) t.email = '';
-      if (t.passcode===undefined) t.passcode = '';
-    });
-    d.events.forEach(ev=>{
-      if (!Array.isArray(ev.benefits)) ev.benefits = [];
-      if (!Array.isArray(ev.attendees)) ev.attendees = [];
-      if (ev.notes===undefined) ev.notes = '';
-    });
-    if (!d.meta) d.meta = {createdAt: new Date().toISOString().slice(0,10)};
-    mergeLiveNewsSnapshot(d);
-    this.save();
-  },
-  save(){
-    try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data)); }catch(e){}
-  },
-};
 
 /* ============================================================
    UI STATE
@@ -750,9 +646,17 @@ const AUTH = {
 // Team data for the Settings view (profiles + invites), fetched on demand.
 const SETTINGS = { profiles: [], invites: [], loaded: false, loading: false };
 
-let DATA = Store.load();
+// Populated by enterApp() -> store.loadAll() once signed in with a profile.
+// null while the auth screen or the post-sign-in loading state is showing.
+let DATA = null;
 
-function persist(){ Store.save(); }
+// No-op as of HT4 — Supabase, not localStorage, is DATA's source of truth
+// for companies/news (real writes go through companiesApi.*/newsApi.* and
+// patch DATA themselves). Views not yet rewired (contacts/tasks/competitors/
+// research/events/connectors/activity log — HT5, HT6, HT7, HT8, HT9, HT11)
+// still call persist() after mutating DATA in place; those edits are
+// session-only until their own Heavy Task adds a real api/*.js write.
+function persist(){}
 function toast(msg){
   const el = document.getElementById('toast');
   el.textContent = msg;
@@ -837,9 +741,7 @@ function renderApp(){
       </div>
       <div class="sidebar-foot">
         <button class="io-btn" id="exportBtn">${ICONS.download} Export data (.json)</button>
-        <button class="io-btn" id="importBtn">${ICONS.upload} Import data</button>
-        <input type="file" id="importFile" accept="application/json" style="display:none">
-        <div class="storage-note">Saved to this browser only. Export regularly to back up or move devices.</div>
+        <div class="storage-note">Export is a manual backup snapshot of what's loaded right now.</div>
         <div class="who-row">
           <span class="who-name">${esc(currentUserName())}</span>
           <button class="linklike" id="signOutBtn">Sign out</button>
@@ -852,6 +754,7 @@ function renderApp(){
           <div class="crumb">${viewCrumb()}</div>
           <h1>${viewTitle()}</h1>
         </div>
+        <button class="btn btn-ghost" id="refreshAllBtn" title="Re-pull everything from the server (PRD §9 — no realtime, refetch on demand)">${ICONS.refresh||'↻'} Refresh</button>
         ${['companies','contacts','solutions','competitors','research','events'].includes(ui.view) ? `
         <div class="search-wrap">
           ${ICONS.search}
@@ -881,8 +784,15 @@ function viewCrumb(){
 
 function bindShell(){
   document.querySelectorAll('[data-nav]').forEach(btn=>{
-    btn.addEventListener('click', ()=>{ ui.view = btn.dataset.nav; ui.search=''; renderApp(); });
+    btn.addEventListener('click', ()=>{
+      const view = btn.dataset.nav;
+      ui.view = view; ui.search = '';
+      renderApp();
+      refreshCurrentView(view);   // PRD §9: refetch that view's slice on navigate
+    });
   });
+  const refreshAllBtn = document.getElementById('refreshAllBtn');
+  if (refreshAllBtn) refreshAllBtn.addEventListener('click', doRefreshAll);
   const search = document.getElementById('searchInput');
   if (search){
     search.addEventListener('input', e=>{ ui.search = e.target.value; renderView(); });
@@ -894,10 +804,6 @@ function bindShell(){
   });
   const exportBtn = document.getElementById('exportBtn');
   if (exportBtn) exportBtn.addEventListener('click', doExport);
-  const importBtn = document.getElementById('importBtn');
-  const importFile = document.getElementById('importFile');
-  if (importBtn) importBtn.addEventListener('click', ()=>importFile.click());
-  if (importFile) importFile.addEventListener('change', doImport);
 
   const addCompanyBtn = document.getElementById('addCompanyBtn');
   if (addCompanyBtn) addCompanyBtn.addEventListener('click', openAddCompanyModal);
@@ -919,6 +825,34 @@ function bindShell(){
   if (importResearchFile) importResearchFile.addEventListener('change', doImportResearch);
   const addEventBtn = document.getElementById('addEventBtn');
   if (addEventBtn) addEventBtn.addEventListener('click', openAddEventModal);
+}
+
+// Re-pulls one view's Supabase-backed slice after navigating to it (PRD §9).
+// A no-op for views not yet wired to Supabase (store.refetchView returns
+// null for those) — their data stays whatever's already in memory.
+async function refreshCurrentView(view){
+  if (!DATA) return;
+  try{
+    const patch = await store.refetchView(view);
+    if (!patch || !DATA) return;
+    if (patch.companies) DATA.companies = patch.companies;
+    if (patch.news) DATA.news = patch.news;
+    if (ui.view === view) renderApp();   // only re-render if still on that view
+  }catch(e){ /* silent — the header Refresh button is the explicit retry path */ }
+}
+
+// The header "Refresh" control — re-pulls every table (PRD §9).
+async function doRefreshAll(){
+  const btn = document.getElementById('refreshAllBtn');
+  if (btn) btn.disabled = true;
+  try{
+    DATA = await store.loadAll();
+    renderApp();
+    toast('Refreshed');
+  }catch(e){
+    toast('Could not refresh — ' + (e.message || 'try again'));
+    if (btn) btn.disabled = false;
+  }
 }
 
 function renderView(){
@@ -1047,9 +981,10 @@ function companyChip(id){
 }
 
 /* ============================================================
-   NEWS TICKER — mix of items auto-pulled by the scheduled RSS-refresh cloud
-   routine (see LIVE_NEWS_SNAPSHOT / mergeLiveNewsSnapshot above) and items
-   added by hand. See the Manage modal for the live-refresh timestamp.
+   NEWS TICKER — news_items in Postgres (src/api/news.js). `live` marks a
+   row a future automated feed job would add (PRD §12 V2 roadmap); every
+   item here is currently added by hand via the Manage modal. Dismissing an
+   item sets dismissed_at team-wide (D-5) instead of a per-browser id list.
    ============================================================ */
 function newsRefLabel(item){
   if (item.kind==='company'){ const c = companyById(item.refId); return c ? c.name : null; }
@@ -1101,8 +1036,7 @@ function openManageNewsModal(){
   openModal(`
     <h3>News feed</h3>
     <p style="font-size:11.5px;color:var(--muted);line-height:1.5;margin-bottom:12px;">
-      Items marked with a live-source tag are pulled in automatically by a scheduled process that checks O&amp;G/marine industry RSS feeds${(DATA.settings&&DATA.settings.lastNewsRefresh)?` — feed last refreshed ${fmtDate(DATA.settings.lastNewsRefresh.slice(0,10))}`:''}.
-      You can also add items by hand (or paste them in from the Research tab / Chrome extension); anything you delete here stays deleted even after the next automatic refresh.
+      Add items by hand as you spot them (news, LinkedIn posts, press releases). A "Live" tag marks anything a future automated feed job would add — no such job runs yet${(DATA.settings&&DATA.settings.lastNewsRefresh)?` (last refreshed ${fmtDate(DATA.settings.lastNewsRefresh.slice(0,10))})`:''}. Removing an item here removes it for everyone.
     </p>
     <div class="field"><label>Headline</label><input id="mTitle"></div>
     <div class="field"><label>Source</label><input id="mSource" placeholder="e.g. Upstream Online, LinkedIn, company press release"></div>
@@ -1142,21 +1076,29 @@ function openManageNewsModal(){
     kindSel.addEventListener('change', syncRefOptions);
     syncRefOptions();
 
-    body.querySelector('#mAdd').addEventListener('click', ()=>{
+    body.querySelector('#mAdd').addEventListener('click', async ()=>{
       const title = body.querySelector('#mTitle').value.trim();
       if (!title){ toast('Headline required'); return; }
-      DATA.news.push({
-        id:'n'+Date.now(), title, source: body.querySelector('#mSource').value.trim()||'Unknown source',
+      const addBtn = body.querySelector('#mAdd'); addBtn.disabled = true;
+      const news = {
+        title, source: body.querySelector('#mSource').value.trim()||'Unknown source',
         url: body.querySelector('#mUrl').value.trim(), date: body.querySelector('#mDate').value || new Date().toISOString().slice(0,10),
-        kind: kindSel.value, refId: kindSel.value ? refSel.value : '', live:false
-      });
-      persist(); closeModal(); renderView(); toast('Added to feed');
+        kind: kindSel.value, refId: kindSel.value ? refSel.value : '',
+      };
+      try{
+        const saved = await newsApi.create(news);
+        DATA.news.push(saved);
+        closeModal(); renderView(); toast('Added to feed');
+      }catch(e){ toast('Could not add — ' + (e.message || 'try again')); addBtn.disabled = false; }
     });
-    body.querySelectorAll('[data-del-news]').forEach(b=>b.addEventListener('click', ()=>{
+    body.querySelectorAll('[data-del-news]').forEach(b=>b.addEventListener('click', async ()=>{
       const id = b.dataset.delNews;
-      DATA.news = DATA.news.filter(x=>x.id!==id);
-      if (!DATA.dismissedNewsIds.includes(id)) DATA.dismissedNewsIds.push(id);
-      persist(); closeModal(); renderView(); openManageNewsModal();
+      b.disabled = true;
+      try{
+        await newsApi.dismiss(id, AUTH.profile && AUTH.profile.id);
+        DATA.news = DATA.news.filter(x=>x.id!==id);
+        closeModal(); renderView(); openManageNewsModal();
+      }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); b.disabled = false; }
     }));
   });
 }
@@ -1281,9 +1223,36 @@ function bindCompaniesControls(){
       e.preventDefault(); col.classList.remove('dragover');
       const id = e.dataTransfer.getData('text/plain');
       const c = companyById(id);
-      if (c){ c.stage = col.dataset.stage; persist(); renderView(); toast(`${c.name} moved to ${stageOf(c.stage).label}`); }
+      if (c) setCompanyStage(c, col.dataset.stage);
     });
   });
+}
+
+// Shared by the kanban drag-drop and the drawer's stage dropdown. Writes
+// company_stage_changes automatically via the companies AFTER UPDATE trigger
+// (PRD §6.5) — no client-side history write needed.
+async function setCompanyStage(c, stage, { inDrawer } = {}){
+  if (c.stage === stage) return;
+  try{
+    await companiesApi.setStage(c.id, stage);
+    c.stage = stage;
+    logActivity('Moved pipeline stage', `${c.name} → ${stageOf(stage).label}`);
+    toast(`${c.name} moved to ${stageOf(stage).label}`);
+  }catch(e){
+    toast('Could not move — ' + (e.message || 'try again'));
+  }
+  renderApp();
+  if (inDrawer) openDrawer(c.id);
+}
+async function setCompanyPriority(c, priority){
+  if (c.priority === priority) return;
+  try{
+    await companiesApi.setPriority(c.id, priority);
+    c.priority = priority;
+  }catch(e){
+    toast('Could not save priority — ' + (e.message || 'try again'));
+  }
+  renderApp(); openDrawer(c.id);
 }
 
 /* ============================================================
@@ -1352,7 +1321,10 @@ function renderDrawer(){
 
       <div class="dsec">
         <div class="dsec-head"><h4>Profile</h4></div>
-        <p class="body">${esc(c.summary)}</p>
+        <div class="add-inline"><input id="coName" value="${esc(c.name)}" placeholder="Company name"></div>
+        <div class="add-inline"><input id="coType" value="${esc(c.type)}" placeholder="Type — e.g. Indigenous — Private E&amp;P"></div>
+        <textarea class="notes-area" id="coSummary" placeholder="Short profile…">${esc(c.summary)}</textarea>
+        <div class="small-btn-row"><button class="btn btn-sm btn-primary" id="saveIdentityBtn">Save details</button></div>
       </div>
 
       <div class="dsec">
@@ -1448,39 +1420,79 @@ function renderContactRow(ct, compact){
 
 function bindDrawer(c){
   document.getElementById('drawerCloseBtn').addEventListener('click', closeDrawer);
-  document.getElementById('stageSelect').addEventListener('change', e=>{ c.stage=e.target.value; persist(); logActivity('Moved pipeline stage', `${c.name} → ${stageOf(c.stage).label}`); renderApp(); openDrawer(c.id); });
-  document.getElementById('prioritySelect').addEventListener('change', e=>{ c.priority=e.target.value; persist(); renderApp(); openDrawer(c.id); });
+  document.getElementById('stageSelect').addEventListener('change', e=>setCompanyStage(c, e.target.value, {inDrawer:true}));
+  document.getElementById('prioritySelect').addEventListener('change', e=>setCompanyPriority(c, e.target.value));
   document.getElementById('deleteCompanyBtn').addEventListener('click', ()=>{
-    openConfirmModal(`Remove ${c.name} and all its contacts/tasks? This can't be undone.`, ()=>{
-      DATA.companies = DATA.companies.filter(x=>x.id!==c.id);
-      DATA.tasks = DATA.tasks.filter(t=>t.companyId!==c.id);
-      persist(); logActivity('Removed an account', c.name); closeDrawer(); renderApp();
-      toast('Account removed');
+    openConfirmModal(`Remove ${c.name} and all its contacts/tasks? This can't be undone.`, async ()=>{
+      try{
+        await companiesApi.remove(c.id);
+        DATA.companies = DATA.companies.filter(x=>x.id!==c.id);
+        DATA.tasks = DATA.tasks.filter(t=>t.companyId!==c.id);   // tasks.company_id cascades in the DB too
+        logActivity('Removed an account', c.name); closeDrawer(); renderApp();
+        toast('Account removed');
+      }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
     });
   });
 
-  document.getElementById('addPainBtn').addEventListener('click', ()=>{
+  document.getElementById('saveIdentityBtn').addEventListener('click', async ()=>{
+    const name = document.getElementById('coName').value.trim();
+    if (!name){ toast('Name required'); return; }
+    const type = document.getElementById('coType').value.trim();
+    const summary = document.getElementById('coSummary').value.trim();
+    try{
+      await companiesApi.updateIdentity(c.id, {name, type, summary});
+      c.name = name; c.type = type; c.summary = summary;
+      toast('Details saved'); renderApp(); openDrawer(c.id);
+    }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+  });
+
+  document.getElementById('addPainBtn').addEventListener('click', async ()=>{
     const inp = document.getElementById('newPain');
-    if (inp.value.trim()){ c.painPoints.push(inp.value.trim()); persist(); openDrawer(c.id); }
+    if (!inp.value.trim()) return;
+    const next = [...c.painPoints, inp.value.trim()];
+    try{ await companiesApi.setPainPoints(c.id, next); c.painPoints = next; openDrawer(c.id); }
+    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
   });
-  document.querySelectorAll('[data-del-pain]').forEach(b=>b.addEventListener('click', ()=>{ c.painPoints.splice(+b.dataset.delPain,1); persist(); openDrawer(c.id); }));
+  document.querySelectorAll('[data-del-pain]').forEach(b=>b.addEventListener('click', async ()=>{
+    const next = c.painPoints.filter((_,i)=>i!==+b.dataset.delPain);
+    try{ await companiesApi.setPainPoints(c.id, next); c.painPoints = next; openDrawer(c.id); }
+    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+  }));
 
-  document.getElementById('addCurBtn').addEventListener('click', ()=>{
+  document.getElementById('addCurBtn').addEventListener('click', async ()=>{
     const inp = document.getElementById('newCur');
-    if (inp.value.trim()){ c.currentSolutions.push(inp.value.trim()); persist(); openDrawer(c.id); }
+    if (!inp.value.trim()) return;
+    const next = [...c.currentSolutions, inp.value.trim()];
+    try{ await companiesApi.setCurrentSolutions(c.id, next); c.currentSolutions = next; openDrawer(c.id); }
+    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
   });
-  document.querySelectorAll('[data-del-cur]').forEach(b=>b.addEventListener('click', ()=>{ c.currentSolutions.splice(+b.dataset.delCur,1); persist(); openDrawer(c.id); }));
+  document.querySelectorAll('[data-del-cur]').forEach(b=>b.addEventListener('click', async ()=>{
+    const next = c.currentSolutions.filter((_,i)=>i!==+b.dataset.delCur);
+    try{ await companiesApi.setCurrentSolutions(c.id, next); c.currentSolutions = next; openDrawer(c.id); }
+    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+  }));
 
-  document.getElementById('addRecBtn').addEventListener('click', ()=>{
+  document.getElementById('addRecBtn').addEventListener('click', async ()=>{
     const sel = document.getElementById('recSolSelect');
     const why = document.getElementById('recWhy');
-    if (sel.value && why.value.trim()){
+    if (!sel.value || !why.value.trim()) return;
+    try{
+      await companiesApi.tagProduct(c.id, sel.value, why.value.trim());
+      c.recommended = c.recommended.filter(r=>r.sol!==sel.value);
       c.recommended.push({sol:sel.value, why:why.value.trim()});
-      persist(); logActivity('Tagged a product to an account', `${solutionById(sel.value)?.name||sel.value} → ${c.name}`);
+      logActivity('Tagged a product to an account', `${solutionById(sel.value)?.name||sel.value} → ${c.name}`);
       openDrawer(c.id); renderView();
-    }
+    }catch(e){ toast('Could not tag — ' + (e.message || 'try again')); }
   });
-  document.querySelectorAll('[data-del-rec]').forEach(b=>b.addEventListener('click', ()=>{ c.recommended.splice(+b.dataset.delRec,1); persist(); openDrawer(c.id); renderView(); }));
+  document.querySelectorAll('[data-del-rec]').forEach(b=>b.addEventListener('click', async ()=>{
+    const r = c.recommended[+b.dataset.delRec];
+    if (!r) return;
+    try{
+      await companiesApi.untagProduct(c.id, r.sol);
+      c.recommended.splice(+b.dataset.delRec,1);
+      openDrawer(c.id); renderView();
+    }catch(e){ toast('Could not untag — ' + (e.message || 'try again')); }
+  }));
   document.querySelectorAll('[data-open-product]').forEach(el=>el.addEventListener('click', ()=>openProductDrawer(el.dataset.openProduct)));
 
   document.getElementById('addContactInline').addEventListener('click', ()=>openAddContactModal(c.id));
@@ -1500,8 +1512,10 @@ function bindDrawer(c){
   }));
   document.getElementById('addTaskInline').addEventListener('click', ()=>openAddTaskModal(c.id));
 
-  document.getElementById('saveNotesBtn').addEventListener('click', ()=>{
-    c.notes = document.getElementById('notesArea').value; persist(); toast('Notes saved');
+  document.getElementById('saveNotesBtn').addEventListener('click', async ()=>{
+    const notes = document.getElementById('notesArea').value;
+    try{ await companiesApi.setNotes(c.id, notes); c.notes = notes; toast('Notes saved'); }
+    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
   });
 }
 
@@ -1614,19 +1628,28 @@ function bindProductDrawer(p){
   document.querySelectorAll('[data-del-hl]').forEach(b=>b.addEventListener('click', ()=>{ p.highlights.splice(+b.dataset.delHl,1); persist(); renderProductDrawer(); }));
 
   document.querySelectorAll('[data-open-company]').forEach(el=>el.addEventListener('click', ()=>openDrawer(el.dataset.openCompany)));
-  document.querySelectorAll('[data-untag]').forEach(b=>b.addEventListener('click', ()=>{
+  document.querySelectorAll('[data-untag]').forEach(b=>b.addEventListener('click', async ()=>{
     const co = companyById(b.dataset.untag);
-    if (co){ co.recommended = co.recommended.filter(r=>r.sol!==p.id); persist(); renderProductDrawer(); renderView(); }
+    if (!co) return;
+    try{
+      await companiesApi.untagProduct(co.id, p.id);
+      co.recommended = co.recommended.filter(r=>r.sol!==p.id);
+      renderProductDrawer(); renderView();
+    }catch(e){ toast('Could not untag — ' + (e.message || 'try again')); }
   }));
   const addTagBtn = document.getElementById('addTagBtn');
-  if (addTagBtn) addTagBtn.addEventListener('click', ()=>{
+  if (addTagBtn) addTagBtn.addEventListener('click', async ()=>{
     const sel = document.getElementById('tagCoSelect');
     const why = document.getElementById('tagWhy');
     const co = companyById(sel.value);
     if (co && why.value.trim()){
-      co.recommended.push({sol:p.id, why:why.value.trim()});
-      persist(); logActivity('Tagged a product to an account', `${p.name} → ${co.name}`);
-      renderProductDrawer(); renderView(); toast('Tagged to '+co.name);
+      try{
+        await companiesApi.tagProduct(co.id, p.id, why.value.trim());
+        co.recommended = co.recommended.filter(r=>r.sol!==p.id);
+        co.recommended.push({sol:p.id, why:why.value.trim()});
+        logActivity('Tagged a product to an account', `${p.name} → ${co.name}`);
+        renderProductDrawer(); renderView(); toast('Tagged to '+co.name);
+      }catch(e){ toast('Could not tag — ' + (e.message || 'try again')); }
     }
     else if (co && !why.value.trim()){ toast('Add a short reason first'); }
   });
@@ -2940,7 +2963,32 @@ async function enterApp(){
     u.searchParams.delete('invite'); u.searchParams.delete('email');
     history.replaceState({}, '', u.pathname + (u.search || '') + u.hash);
   }
-  renderApp();
+  await loadDataAndRender();
+}
+
+// Loads every table from Supabase (src/store.js) and renders the app, or a
+// retry screen if the load fails (e.g. offline right after signing in).
+async function loadDataAndRender(){
+  renderLoadingScreen();
+  try{
+    DATA = await store.loadAll();
+    renderApp();
+  }catch(e){
+    renderLoadingScreen({ error: e.message || 'Could not load your data.' });
+  }
+}
+function renderLoadingScreen({ error } = {}){
+  document.getElementById('app').innerHTML = `
+    <div class="gate-wrap"><div class="gate-card">
+      <div class="gate-brand">AEROSUB</div>
+      <h2>${error ? 'Could not load' : 'Loading…'}</h2>
+      ${error
+        ? `<p style="color:var(--critical);">${esc(error)}</p><button class="btn btn-primary" id="retryLoadBtn" style="width:100%;justify-content:center;">Try again</button>`
+        : `<p>Pulling the latest data…</p>`}
+    </div></div>
+  `;
+  const retry = document.getElementById('retryLoadBtn');
+  if (retry) retry.onclick = loadDataAndRender;
 }
 
 async function boot(){
@@ -3176,17 +3224,21 @@ function openAddCompanyModal(){
     </div>
   `, body=>{
     body.querySelector('#mCancel').onclick = closeModal;
-    body.querySelector('#mSave').onclick = ()=>{
+    body.querySelector('#mSave').onclick = async ()=>{
       const name = body.querySelector('#mName').value.trim();
       if (!name){ toast('Name required'); return; }
-      const id = name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') + '-' + Math.random().toString(36).slice(2,6);
-      DATA.companies.push({
-        id, name, type: body.querySelector('#mType').value.trim()||'Uncategorised',
-        priority: body.querySelector('#mPriority').value, stage:'research', flags:[],
+      const save = body.querySelector('#mSave'); save.disabled = true;
+      const company = {
+        id: crypto.randomUUID(), name, type: body.querySelector('#mType').value.trim()||'Uncategorised',
+        priority: body.querySelector('#mPriority').value, stage:'research',
         summary: body.querySelector('#mSummary').value.trim(),
-        painPoints:[], currentSolutions:[], recommended:[], notes:'', contacts:[]
-      });
-      persist(); logActivity('Added an account', name); closeModal(); renderApp(); toast('Account added');
+        painPoints:[], currentSolutions:[],
+      };
+      try{
+        const saved = await companiesApi.create(company);
+        DATA.companies.push(saved);
+        logActivity('Added an account', name); closeModal(); renderApp(); toast('Account added');
+      }catch(e){ toast('Could not add account — ' + (e.message || 'try again')); save.disabled = false; }
     };
   });
 }
@@ -3369,7 +3421,12 @@ function openAddSolutionModal(){
 }
 
 /* ============================================================
-   EXPORT / IMPORT
+   EXPORT
+   D-9: the old "Import data (replace)" is gone — wholesale-replacing DATA
+   from a JSON file can't safely wipe a shared Supabase DB from one client.
+   Its replacement, an upsert-merge importer (PRD §10.6, "Migrate my local
+   data"), is deferred alongside HT11. Export stays as a manual JSON snapshot
+   of whatever is currently loaded (PRD §2).
    ============================================================ */
 async function doExport(){
   logActivity('Exported data (JSON backup)');
@@ -3392,27 +3449,6 @@ async function doExport(){
     toast('Exported ' + filename);
   }catch(e){ toast('Export is unavailable in this view'); }
 }
-function doImport(e){
-  const file = e.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    let parsed;
-    try{
-      parsed = JSON.parse(reader.result);
-      if (!parsed.companies || !parsed.tasks) throw new Error('bad shape');
-    }catch(err){ toast('Could not read that file — expecting an exported Aerosub Pipeline JSON file'); return; }
-    openConfirmModal('Replace current data with the imported file? This overwrites everything currently in the browser.', ()=>{
-      DATA = parsed; Store.data = DATA;
-      Store.migrate(); // handles imports of older-shape backups the same way a returning browser would be healed
-      logActivity('Imported data (replaced local dataset)');
-      renderApp(); toast('Data imported');
-    }, 'Replace data');
-  };
-  reader.readAsText(file);
-  e.target.value = '';
-}
-
 /* ============================================================
    BOOT — kick off the auth flow (definitions above, PRD §5.5)
    ============================================================ */
