@@ -1,0 +1,32 @@
+{
+  "name": "aerosub-pipeline",
+  "version": "0.0.0",
+  "description": "Aerosub Pipeline — internal BD tool",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "lint": "echo \"(no linter yet)\"",
+    "smoke": "node scripts/smoke-ht0.mjs && node scripts/browser-smoke.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/devaerosubco/aerosub-pipeline.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/devaerosubco/aerosub-pipeline/issues"
+  },
+  "homepage": "https://github.com/devaerosubco/aerosub-pipeline#readme",
+  "private": true,
+  "devDependencies": {
+    "jsdom": "^30.0.1",
+    "playwright": "^1.62.1",
+    "vite": "^8.2.2",
+    "vitest": "^5.0.0"
+  }
+}

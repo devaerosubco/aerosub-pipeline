@@ -360,6 +360,7 @@ Dashboard (stage bar, flags, high-priority, overdue/due-soon, pain themes, news 
 - **D-10** *(withdrawn — see S-7)* scalar lists stay as `text[]` columns, not child tables.
 - **D-11** `tasks.company_id` FK is `ON DELETE CASCADE` (matches the prototype; general tasks are `company_id IS NULL`).
 - **D-12** the `LIVE_NEWS_SNAPSHOT` marker block, `mergeLiveNewsSnapshot()`, and the `dismissedNewsIds` array are **deleted** — the DB is the source of news now, and dismissal is `news_items.dismissed_at` (D-5). The V2 news-feed job (§12) writes `news_items` directly.
+- **D-13** (HT0) removed one malformed CSS rule from the prototype — an empty `.flag-critical{}` dark-mode block with a dangling comma-selector before an `@media`. Produced zero styles in any browser; the `lightningcss` build minifier rejects it. Provably a no-op.
 
 ## 16. Systems-design decisions & rejected alternatives (S-list)
 

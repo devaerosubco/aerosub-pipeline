@@ -13,7 +13,7 @@ Companion docs: [PRD.md](PRD.md), [AUDIT.md](AUDIT.md). Refs like "PRD §16 S-3"
 | 1 — Audit (`AUDIT.md`) | ✅ |
 | 2 — PRD (`PRD.md`) | ✅ (re-scoped down after the "not over-engineered?" review — 18 tables, no realtime) |
 | 3 — Heavy Tasks (`TASKS.md`) | ✅ + build-readiness pass done (2026-09-04) |
-| 4 — Execute | 🟢 **not started — ready to start.** HT0 needs only Node; HT1–HT12 run on local Supabase (Docker, present). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
+| 4 — Execute | 🟢 **HT0 done (2026-09-04).** Next: HT1 (needs `supabase start` / Docker). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
 | 5 — Final report | pending |
 
 **What's needed, and when:**
@@ -31,13 +31,13 @@ Companion docs: [PRD.md](PRD.md), [AUDIT.md](AUDIT.md). Refs like "PRD §16 S-3"
 
 **Acceptance criteria:** `npm run dev` and `npm run build` produce an app that behaves *identically* to `app/aerosub_crm.html` today — same seed, same `localStorage` key (`aerosub_pipeline_v1`), every feature, the passcode gate still works. The only change is packaging.
 
-- [ ] `npm init`; add `vite` + `vitest`; `git init` (offer). `.gitignore`: `node_modules/`, `dist/`, `.env`, `.env.*.local`, `.env.test` — **not** `.env.example`.
-- [ ] `index.html` at repo root becomes the real entry (was a redirect stub): `<head>` with the `<title>` + charset/viewport, `<link rel="stylesheet" href="/src/style.css">`, `<script type="module" src="/src/main.js"></script>`.
-- [ ] `src/style.css` = the prototype's `<style>` block verbatim. `src/main.js` = the prototype's `<script>` body verbatim (one file — do **not** split it). Add `export`s only where HT4+ will need them later; otherwise leave the code as-is.
-- [ ] `app/aerosub_crm.html` stays as the frozen reference until HT15.
-- [ ] Manual pass: built app vs. the original file — walk the PRD §14 Preserved-feature checklist against `localStorage`; identical, including the passcode gate.
-- [ ] Commit. This is the baseline for every later "did I break it?" check.
-  - ↳ note:
+- [x] `npm init`; `vite`@8 + `vitest` + `jsdom` + `playwright` (dev deps). Branch `supabase-rebuild` off `main`. `.gitignore` (env, node_modules, dist, screenshots).
+- [x] `index.html` at repo root is now the real entry (was a redirect stub): head with `<title>`/charset/viewport + `<link>` to `/src/style.css`, `<script type="module" src="/src/main.js">`, and the 5 body divs (`#app`, `#scrim`, `#drawer`, `#modalScrim`>`#modalBody`, `#toast`).
+- [x] `src/style.css` = the prototype's `<style>` verbatim **minus one malformed no-op rule** (D-13 — `lightningcss` build minifier rejected it). `src/main.js` = the `<script>` body verbatim, one file, loaded as an ES module (no imports/exports yet). Split out of `app/aerosub_crm.html` by string slicing on the `<style>`/`<script>` tags — byte-identical content.
+- [x] `app/aerosub_crm.html` frozen as reference until HT15.
+- [x] Verified: `npm run build` clean (192 kB JS / 24 kB CSS); `node --check src/main.js` OK; only inline handler is `onclick="event.stopPropagation()"` **inside an exported report string**, not the app DOM → ES-module scope is safe. `npm run smoke` = jsdom boot test (dashboard + seeded companies + no errors) **and** a headless-Chromium test (nav, tiles, seeded data, zero console errors) + screenshot. Both green; screenshot matches the original.
+- [x] Committed.
+  - ↳ note: Vite 8 uses `lightningcss`; it rejects an empty `.flag-critical{}` dark-mode rule in the prototype CSS — removed it (D-13, provably zero styles). `npm i` is slow in this env (ran in background); `package-lock.json` committed.
 
 ---
 
