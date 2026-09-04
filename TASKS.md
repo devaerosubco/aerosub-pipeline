@@ -13,10 +13,10 @@ Companion docs: [PRD.md](PRD.md), [AUDIT.md](AUDIT.md). Refs like "PRD §16 S-3"
 | 1 — Audit (`AUDIT.md`) | ✅ |
 | 2 — PRD (`PRD.md`) | ✅ (re-scoped down after the "not over-engineered?" review — 18 tables, no realtime) |
 | 3 — Heavy Tasks (`TASKS.md`) | ✅ + build-readiness pass done (2026-09-04) |
-| 4 — Execute | 🟢 **HT0 + HT1 done, HT3 done (2026-09-04).** Next: HT2 (auth/invite flow). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
+| 4 — Execute | 🟢 **HT0 + HT1 + HT3 + HT2 done (2026-09-04).** Next: HT4 (data layer + Companies + Dashboard/News). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
 | 5 — Final report | pending |
 
-Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema + seed; `npm run db:check` = 41/41 structural; `npm run test:rls` = anon fully denied; `npm run check:secrets` = clean.
+Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema + seed; `npm run db:check` = 41/41 structural; `npm run test:rls` = anon fully denied; `npm run test:invite` = 25/25 invite/signup matrix; `npm run check:secrets` = clean; `npm run smoke` = real-browser sign-in + dashboard render.
 
 **What's needed, and when:**
 - **Now** — HT0. Needs Node + npm (present).
@@ -68,16 +68,18 @@ Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema
 
 **Acceptance criteria:** With a valid invite link, name+email+password signup → confirm (via `localhost:54324`) → `profiles` row with `full_name`, invite consumed → sign in. No / expired / consumed / mismatched / revoked token → rejected at the DB; `>30d` expiry → CHECK rejects. Concurrent redemption → one winner. Profile-less session → "get a new link" screen, no data access. Password reset + "set new password" works. Any member can create/list/revoke invites in Settings. Shell driven by `onAuthStateChange` + profile check; sign-out clears `DATA`.
 
-- [ ] Bootstrap: `insert into public.invites (email) values ('you@example.com') returning token;` → `http://localhost:5173/?invite=<token>` → sign up → grab the confirm link from `localhost:54324`.
-- [ ] `src/auth.js`: `createClient` (PKCE, `persistSession`, `autoRefreshToken`, `detectSessionInUrl:true`). Exports `getSession`, `onAuthChange`, `signIn`, `signUpWithInvite({fullName,email,password,token})` (passes `options.data = {full_name, invite_token}` + `emailRedirectTo = location.origin`), `signOut`, `resetPassword`, `updatePassword`, `myProfile()`.
-- [ ] `signUpWithInvite` error handling: GoTrue returns a generic *"Database error saving new user"* on any `handle_new_user` `RAISE` — **don't try to parse the reason**. Show one catch-all: "Sign-up failed — your invite link may be invalid, expired, or already used. Ask a teammate for a new one." (PRD §5.2).
-- [ ] Replace `renderGate()` → `renderAuth()`: **Sign in** / **Forgot password**; **Complete signup** (name+email+password) when `?invite=<token>` (email prefilled+locked if the invite pins one); **Set new password** state; "check your inbox" states; "invite not valid / access removed" state for a profile-less session (+ sign out).
-- [ ] Boot: `getSession()` → session? `myProfile()` → profile? load app : profile-less screen. No session → auth screen. `onAuthChange` handles **`PASSWORD_RECOVERY`** (→ Set-new-password screen *even though a session now exists*), `SIGNED_OUT` / `TOKEN_REFRESHED` failure / a `USER_UPDATED` that drops the profile (→ clear `DATA` + auth screen), and `SIGNED_IN`.
-- [ ] `src/api/invites.js` + Settings panel: `create({email?, expiresDays?≤30})` → copyable `?invite=` link (`created_by = auth.uid()`); `list()`; `revoke(id)`.
-- [ ] Settings "Team" list = `profiles`; edit own `full_name`/`department`.
-- [ ] Delete dead auth code: `accessCode`, `passcode`, `genPasscode`, `teamHasIndividualLogins`, `isUnlocked`, `maybePromptForName`, `sessionStorage`/`localStorage` keys, gate copy, "Show passcodes"/"Set code"/regen UI.
-- [ ] Run the PRD §14 invite/signup test matrix; record here.
-  - ↳ note:
+- [x] Bootstrap: `insert into public.invites (email) values ('you@example.com') returning token;` → `http://localhost:5173/?invite=<token>` → sign up → grab the confirm link from `localhost:54324`.
+- [x] `src/auth.js`: `createClient` (PKCE, `persistSession`, `autoRefreshToken`, `detectSessionInUrl:true`). Exports `getSession`, `onAuthChange`, `signIn`, `signUpWithInvite({fullName,email,password,token})` (passes `options.data = {full_name, invite_token}` + `emailRedirectTo = location.origin`), `signOut`, `resetPassword`, `updatePassword`, `myProfile()`.
+- [x] `signUpWithInvite` error handling: GoTrue returns a generic *"Database error saving new user"* on any `handle_new_user` `RAISE` — **don't try to parse the reason**. Show one catch-all: "Sign-up failed — your invite link may be invalid, expired, or already used. Ask a teammate for a new one." (PRD §5.2).
+- [x] Replace `renderGate()` → `renderAuth()`: **Sign in** / **Forgot password**; **Complete signup** (name+email+password) when `?invite=<token>` (email prefilled+locked if the invite pins one); **Set new password** state; "check your inbox" states; "invite not valid / access removed" state for a profile-less session (+ sign out).
+- [x] Boot: `getSession()` → session? `myProfile()` → profile? load app : profile-less screen. No session → auth screen. `onAuthChange` handles **`PASSWORD_RECOVERY`** (→ Set-new-password screen *even though a session now exists*), `SIGNED_OUT` / `TOKEN_REFRESHED` failure / a `USER_UPDATED` that drops the profile (→ clear `DATA` + auth screen), and `SIGNED_IN`.
+- [x] `src/api/invites.js` + Settings panel: `create({email?, expiresDays?≤30})` → copyable `?invite=` link (`created_by = auth.uid()`); `list()`; `revoke(id)`.
+- [x] Settings "Team" list = `profiles`; edit own `full_name`/`department`.
+- [x] Delete dead auth code: `accessCode`, `passcode`, `genPasscode`, `teamHasIndividualLogins`, `isUnlocked`, `maybePromptForName`, `sessionStorage`/`localStorage` keys, gate copy, "Show passcodes"/"Set code"/regen UI.
+- [x] Run the PRD §14 invite/signup test matrix; record here.
+  - ↳ note: `scripts/invite-test.mjs` (new) drives real signups against local Supabase + Mailpit — **25/25 pass**: no/garbage/expired/mismatched/revoked token all rejected; `>30d` expiry CHECK rejects; valid signup → confirm → `profiles` row correct → invite consumed; concurrent redemption → exactly one winner; a member reading `profiles` doesn't recurse (BYPASSRLS confirmed); password reset → recovery session → new password works, old one doesn't; a profile-less session reads 0 rows everywhere. `scripts/browser-smoke.mjs` rewritten (the old jsdom `smoke-ht0.mjs` can't run ES modules, so it's retired) to bootstrap a real member and drive sign-in through a headless-Chromium dashboard render — 7/7 pass, screenshots match. Settings UI (profile save, team list, invite create/copy/revoke) hand-verified in a real browser.
+  - ↳ **bug found + fixed (pre-existing, from HT1):** `handle_new_user()` set `invites.consumed_by = new.id` *before* inserting the matching `profiles` row, but `consumed_by` FK-references `profiles(id)` — every real signup 500'd with a FK violation. Fixed by inserting the profile first (migration `20260904120003`, re-verified 41/41 `db:check` + 20/20 `rls-test` + 25/25 `invite-test`). Neither prior script exercised an actual signup, which is why it wasn't caught until now.
+  - ↳ **bug found + fixed (introduced this task):** `bindSettingsControls()` called `loadSettingsData()` unconditionally; its completion re-renders Settings (to show the fetched rows), which re-binds controls, which called it again — an infinite render loop (caught by a real-browser click test, not the API tests). Fixed: load once per visit (`if (!SETTINGS.loaded)`), "Refresh"/create/revoke trigger it explicitly.
 
 ---
 

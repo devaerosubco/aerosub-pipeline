@@ -8,11 +8,12 @@
     "preview": "vite preview",
     "test": "vitest run",
     "lint": "echo \"(no linter yet)\"",
-    "smoke": "node scripts/smoke-ht0.mjs && node scripts/browser-smoke.mjs",
+    "smoke": "node scripts/browser-smoke.mjs",
     "seed:gen": "node scripts/gen-seed-source.mjs && node scripts/extract-seed.mjs",
     "db:check": "node scripts/db-check.mjs",
     "db:reset": "supabase db reset",
     "test:rls": "node scripts/rls-test.mjs",
+    "test:invite": "node scripts/invite-test.mjs",
     "check:secrets": "bash scripts/check-no-secrets.sh"
   },
   "repository": {

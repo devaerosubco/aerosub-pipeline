@@ -81,6 +81,12 @@ grant execute on function public.is_member() to authenticated;
 -- RAISEs, which rolls back the entire signup transaction (no auth.users row,
 -- no confirmation email). GoTrue surfaces this as a generic error; the client
 -- shows one catch-all message.
+--
+-- Order matters: the profile is inserted BEFORE the invite is marked
+-- consumed, because invites.consumed_by references profiles(id) — updating
+-- it first would violate that FK (no profiles row exists yet for new.id).
+-- Safe either way: an invite-check failure still rolls back the whole
+-- transaction, profile insert included.
 -- ---------------------------------------------------------------------------
 create or replace function public.handle_new_user()
 returns trigger
@@ -92,6 +98,9 @@ declare
   v_token    text := new.raw_user_meta_data ->> 'invite_token';
   v_consumed integer;
 begin
+  insert into public.profiles (id, email, full_name)
+  values (new.id, new.email, nullif(trim(new.raw_user_meta_data ->> 'full_name'), ''));
+
   update public.invites
      set consumed_at = now(),
          consumed_by = new.id
@@ -104,9 +113,6 @@ begin
   if v_consumed = 0 then
     raise exception 'signup rejected: invite missing, invalid, expired, email-mismatched, or already used';
   end if;
-
-  insert into public.profiles (id, email, full_name)
-  values (new.id, new.email, nullif(trim(new.raw_user_meta_data ->> 'full_name'), ''));
 
   return new;
 end;

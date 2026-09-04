@@ -1,4 +1,11 @@
 "use strict";
+import {
+  getSession, onAuthChange, signIn, signUpWithInvite, signOut,
+  resetPassword, updatePassword, myProfile, updateMyProfile, listProfiles,
+  SIGNUP_FAILED_MESSAGE,
+} from './auth.js';
+import * as invitesApi from './api/invites.js';
+
 /* ============================================================
    ICONS (tiny inline SVGs)
    ============================================================ */
@@ -725,8 +732,23 @@ const ui = {
   tickerPaused:false,
   reportCompanyId:null,
   reportSections:{profile:true, pain:true, current:true, recommended:true, contacts:true, notes:false},
-  showTeamCodes:false,
 };
+
+/* ============================================================
+   AUTH STATE  (PRD §5 — invite-link signup, no roles)
+   ============================================================ */
+const AUTH = {
+  session: null,
+  profile: null,          // profiles row, or null == not a member
+  mode: 'loading',        // loading | signin | signup | reset | set-password
+                          // | sent-confirm | sent-reset | no-profile | app
+  inviteToken: null,
+  pinnedEmail: '',
+  error: '',
+};
+
+// Team data for the Settings view (profiles + invites), fetched on demand.
+const SETTINGS = { profiles: [], invites: [], loaded: false, loading: false };
 
 let DATA = Store.load();
 
@@ -818,6 +840,10 @@ function renderApp(){
         <button class="io-btn" id="importBtn">${ICONS.upload} Import data</button>
         <input type="file" id="importFile" accept="application/json" style="display:none">
         <div class="storage-note">Saved to this browser only. Export regularly to back up or move devices.</div>
+        <div class="who-row">
+          <span class="who-name">${esc(currentUserName())}</span>
+          <button class="linklike" id="signOutBtn">Sign out</button>
+        </div>
       </div>
     </div>
     <div class="main">
@@ -861,6 +887,11 @@ function bindShell(){
   if (search){
     search.addEventListener('input', e=>{ ui.search = e.target.value; renderView(); });
   }
+  const signOutBtn = document.getElementById('signOutBtn');
+  if (signOutBtn) signOutBtn.addEventListener('click', async ()=>{
+    signOutBtn.disabled = true;
+    await signOut();   // onAuthChange('SIGNED_OUT') swaps to the auth screen
+  });
   const exportBtn = document.getElementById('exportBtn');
   if (exportBtn) exportBtn.addEventListener('click', doExport);
   const importBtn = document.getElementById('importBtn');
@@ -2451,29 +2482,16 @@ async function doExportEventMd(id){
 }
 
 /* ============================================================
-   SETTINGS — Access, Team & permissions, Connectors, Activity log
-   Everything here is local to this browser. There is no backend, so this
-   cannot enforce real per-user security or sync data between teammates —
-   see the settings-note text rendered at the top of the view for the
-   honest version of what each piece actually does.
+   SETTINGS — Your profile, Team, Invites, Connectors, Activity log
+   Team + invites are real Supabase data (RLS: any member, PRD §7). The
+   activity log is still browser-local in this task — HT11 moves it to
+   Postgres. Connectors move in HT4.
    ============================================================ */
 const DEPARTMENTS = ['Marketing','HR','Business Development','Engineering','MD','Other'];
-const PERMISSIONS = ['Admin','Editor','Viewer'];
 
+// Attribution name for the activity log — the signed-in member's profile.
 function currentUserName(){
-  try{ return localStorage.getItem('aerosub_current_user') || ''; }catch(e){ return ''; }
-}
-function setCurrentUserName(name){
-  try{ localStorage.setItem('aerosub_current_user', name); }catch(e){}
-}
-function teamHasIndividualLogins(){
-  return DATA.team.some(t=>t.name && t.passcode);
-}
-function genPasscode(){
-  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O/1/I — easy to read aloud/type
-  let out = '';
-  for (let i=0;i<6;i++) out += chars[Math.floor(Math.random()*chars.length)];
-  return out;
+  return (AUTH.profile && (AUTH.profile.full_name || AUTH.profile.email)) || '';
 }
 function logActivity(action, detail){
   if (!DATA || !Array.isArray(DATA.activityLog)) return;
@@ -2486,56 +2504,83 @@ function logActivity(action, detail){
 }
 
 function renderSettings(){
-  const namedTeam = DATA.team.filter(t=>t.name);
+  const me = AUTH.profile || {};
+  const deptOpts = ['', ...DEPARTMENTS].map(d=>
+    `<option value="${esc(d)}" ${(me.department||'')===d?'selected':''}>${d||'—'}</option>`).join('');
+  const team = SETTINGS.profiles;
+  const invites = SETTINGS.invites;
+  const firstLoad = !SETTINGS.loaded;
+
   return `
     <div class="card panel">
-      <h3>Access</h3>
+      <h3>Your profile</h3>
       <div class="settings-note">
-        <b>What this actually does:</b> ${teamHasIndividualLogins()
-          ? 'each team member below with a passcode logs in with their own code, so the activity log identifies them automatically — no separate name prompt needed.'
-          : 'no one has a personal passcode yet, so anyone with the shared code below gets in and just types their name.'}
-        None of this is real per-user security — it is enforced entirely in this page's own JavaScript, so anyone who opens the browser's dev tools can read the codes or bypass the check, and there's no server verifying anything.
-        Data lives in <b>this browser only</b> and does not sync between teammates — each person who opens this tool has their own separate copy, so "team" here
-        means everyone working from the same exported/imported file, not shared live data. Real shared data with server-enforced permissions would need an actual backend.
+        Your name and department are how teammates and the activity log identify you.
+        Your sign-in email (<b>${esc(me.email||'')}</b>) is fixed and can't be changed here.
       </div>
-      <div class="field"><label>Shared team code <span style="font-weight:400;color:var(--muted);">(fallback for anyone without a personal passcode — leave blank to disable)</span></label><input id="accessCodeInput" value="${esc(DATA.settings.accessCode||'')}" placeholder="e.g. aerosub2027"></div>
-      <div class="field"><label>Your name (remembered in this browser only)</label><input id="myNameInput" value="${esc(currentUserName())}" placeholder="e.g. Jane Doe"></div>
-      <button class="btn btn-primary btn-sm" id="saveAccessBtn">Save</button>
+      <div class="field"><label>Full name</label><input id="profName" value="${esc(me.full_name||'')}" placeholder="e.g. Jane Doe"></div>
+      <div class="field"><label>Department</label><select id="profDept">${deptOpts}</select></div>
+      <button class="btn btn-primary btn-sm" id="saveProfileBtn">Save</button>
     </div>
 
     <div class="card panel">
       <div class="row" style="justify-content:space-between;margin-bottom:12px;">
-        <h3 style="margin-bottom:0;">Team & permissions</h3>
-        <div class="row" style="gap:12px;">
-          <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted);cursor:pointer;">
-            <input type="checkbox" id="toggleCodesChk" ${ui.showTeamCodes?'checked':''}> Show passcodes
-          </label>
-          <button class="btn btn-sm btn-primary" id="addTeamBtn">${ICONS.plus} Add person</button>
-        </div>
+        <h3 style="margin-bottom:0;">Team</h3>
+        <button class="btn btn-sm btn-ghost" id="reloadTeamBtn">Refresh</button>
       </div>
+      <p style="font-size:11px;color:var(--muted);margin-bottom:10px;">
+        Everyone who has joined through an invite link. There are no roles — every member can see and edit everything.
+      </p>
+      ${firstLoad ? `<div class="empty" style="padding:14px;">Loading…</div>` : `
       <div class="tablewrap">
         <table>
-          <thead><tr><th>Name</th><th>Email</th><th>Department</th><th>Permission</th><th>Passcode</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Email</th><th>Department</th><th>Joined</th></tr></thead>
           <tbody>
-            ${namedTeam.map(t=>`
+            ${team.map(t=>`
               <tr>
-                <td class="name-cell">${esc(t.name)}</td>
-                <td>${t.email?esc(t.email):'<span class="sub">—</span>'}</td>
-                <td><span class="chip chip-teal">${esc(t.department)}</span></td>
-                <td><span class="chip ${t.permission==='Admin'?'chip-high':t.permission==='Editor'?'chip-medium':'chip-low'}">${esc(t.permission)}</span></td>
-                <td>
-                  ${t.passcode
-                    ? `<span style="font-family:var(--font-mono);letter-spacing:.05em;">${ui.showTeamCodes?esc(t.passcode):'••••••'}</span>
-                       <button class="btn btn-sm" data-regen-team="${t.id}" style="margin-left:6px;" title="Generate a new code for them">↻</button>`
-                    : `<button class="btn btn-sm" data-regen-team="${t.id}">Set code</button>`}
-                </td>
-                <td><button class="x" data-del-team="${t.id}" style="background:none;border:none;color:var(--faint);cursor:pointer;">${ICONS.x}</button></td>
+                <td class="name-cell">${esc(t.full_name||'—')}${t.id===me.id?' <span class="sub">(you)</span>':''}</td>
+                <td>${esc(t.email||'')}</td>
+                <td>${t.department?`<span class="chip chip-teal">${esc(t.department)}</span>`:'<span class="sub">—</span>'}</td>
+                <td class="sub">${t.created_at?new Date(t.created_at).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):''}</td>
               </tr>
             `).join('')}
           </tbody>
         </table>
       </div>
-      ${namedTeam.length===0?`<div class="empty">${ICONS.empty}<div>No team members added yet.</div></div>`:''}
+      ${team.length===0?`<div class="empty">${ICONS.empty}<div>No members yet.</div></div>`:''}`}
+    </div>
+
+    <div class="card panel">
+      <div class="row" style="justify-content:space-between;margin-bottom:12px;">
+        <h3 style="margin-bottom:0;">Invites</h3>
+        <button class="btn btn-sm btn-primary" id="newInviteBtn">${ICONS.plus} New invite</button>
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-bottom:10px;">
+        Create a single-use link and send it to a new teammate however you like. They set their own name, email and password.
+      </p>
+      ${firstLoad ? `<div class="empty" style="padding:14px;">Loading…</div>` : `
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>For</th><th>Status</th><th>Expires</th><th></th></tr></thead>
+          <tbody>
+            ${invites.map(inv=>{
+              const st = invitesApi.inviteStatus(inv);
+              return `
+              <tr>
+                <td>${inv.email?esc(inv.email):'<span class="sub">anyone with the link</span>'}</td>
+                <td><span class="chip ${st==='active'?'chip-medium':st==='used'?'chip-low':'chip-high'}">${st}</span></td>
+                <td class="sub">${new Date(inv.expires_at).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</td>
+                <td style="white-space:nowrap;text-align:right;">
+                  ${st==='active'?`
+                    <button class="btn btn-sm" data-copy-invite="${esc(inv.token)}" data-invite-email="${esc(inv.email||'')}">Copy link</button>
+                    <button class="btn btn-sm" data-revoke-invite="${esc(inv.id)}">Revoke</button>`:''}
+                </td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+      ${invites.length===0?`<div class="empty">${ICONS.empty}<div>No invites yet.</div></div>`:''}`}
     </div>
 
     <div class="card panel">
@@ -2555,7 +2600,7 @@ function renderSettings(){
 
     <div class="card panel">
       <div class="row" style="justify-content:space-between;margin-bottom:12px;">
-        <h3 style="margin-bottom:0;">Activity log <span style="color:var(--faint);text-transform:none;letter-spacing:0;">— this browser only</span></h3>
+        <h3 style="margin-bottom:0;">Activity log <span style="color:var(--faint);text-transform:none;letter-spacing:0;">— this browser only (moves to the server in a later task)</span></h3>
         <button class="btn btn-sm btn-ghost" id="clearLogBtn">Clear log</button>
       </div>
       ${DATA.activityLog.length===0?`<div class="empty">${ICONS.empty}<div>No activity recorded yet in this browser.</div></div>`:
@@ -2568,33 +2613,54 @@ function renderSettings(){
     </div>
   `;
 }
+
+function loadSettingsData(){
+  if (SETTINGS.loading) return;
+  SETTINGS.loading = true;
+  Promise.all([listProfiles(), invitesApi.list()])
+    .then(([profiles, invites])=>{ SETTINGS.profiles = profiles; SETTINGS.invites = invites; SETTINGS.loaded = true; })
+    .catch(()=>{ toast('Could not load team data'); })
+    .finally(()=>{ SETTINGS.loading = false; if (ui.view==='settings') renderView(); });
+}
+function reloadSettingsData(){ SETTINGS.loaded = false; loadSettingsData(); }
+
 function bindSettingsControls(){
-  document.getElementById('saveAccessBtn').addEventListener('click', ()=>{
-    DATA.settings.accessCode = document.getElementById('accessCodeInput').value.trim();
-    setCurrentUserName(document.getElementById('myNameInput').value.trim());
-    persist(); renderApp(); toast('Settings saved');
+  // Load once per visit, not on every render — loadSettingsData()'s own
+  // completion re-renders this view (to fill in the fetched rows), which
+  // re-enters bindSettingsControls(); an unconditional call here would loop.
+  // The "Refresh" button (below) re-pulls on demand.
+  if (!SETTINGS.loaded) loadSettingsData();
+
+  document.getElementById('saveProfileBtn').addEventListener('click', async ()=>{
+    const btn = document.getElementById('saveProfileBtn');
+    btn.disabled = true;
+    try{
+      const updated = await updateMyProfile({
+        fullName: document.getElementById('profName').value,
+        department: document.getElementById('profDept').value,
+      });
+      AUTH.profile = updated;
+      const i = SETTINGS.profiles.findIndex(x=>x.id===updated.id);
+      if (i>=0) SETTINGS.profiles[i] = {...SETTINGS.profiles[i], ...updated};
+      renderApp(); toast('Profile saved');
+    }catch(e){ toast('Could not save — '+(e.message||'try again')); btn.disabled = false; }
   });
-  document.getElementById('addTeamBtn').addEventListener('click', openAddTeamModal);
-  document.getElementById('toggleCodesChk').addEventListener('change', e=>{ ui.showTeamCodes = e.target.checked; renderView(); });
-  document.querySelectorAll('[data-del-team]').forEach(b=>b.addEventListener('click', ()=>{
-    DATA.team = DATA.team.filter(t=>t.id!==b.dataset.delTeam); persist(); renderView();
+
+  document.getElementById('reloadTeamBtn').addEventListener('click', reloadSettingsData);
+  document.getElementById('newInviteBtn').addEventListener('click', openNewInviteModal);
+
+  document.querySelectorAll('[data-copy-invite]').forEach(b=>b.addEventListener('click', async ()=>{
+    const link = invitesApi.inviteLink({ token: b.dataset.copyInvite, email: b.dataset.inviteEmail || '' });
+    try{ await navigator.clipboard.writeText(link); toast('Invite link copied'); }
+    catch(e){ openInviteLinkModal(link); }
   }));
-  document.querySelectorAll('[data-regen-team]').forEach(b=>b.addEventListener('click', ()=>{
-    const t = DATA.team.find(x=>x.id===b.dataset.regenTeam);
-    if (!t) return;
-    const doRegen = ()=>{
-      let code;
-      do { code = genPasscode(); } while (DATA.team.some(x=>x.id!==t.id && x.passcode===code));
-      t.passcode = code;
-      persist(); ui.showTeamCodes = true; renderView();
-      toast(`${t.name}'s new passcode is ${code} — share it with them, their old code stops working now`);
-    };
-    if (t.passcode){
-      openConfirmModal(`Generate a new passcode for ${t.name}? Their current code will stop working immediately.`, doRegen, 'Generate new code');
-    } else {
-      doRegen();
-    }
+  document.querySelectorAll('[data-revoke-invite]').forEach(b=>b.addEventListener('click', ()=>{
+    openConfirmModal('Revoke this invite? The link stops working immediately.', async ()=>{
+      try{ await invitesApi.revoke(b.dataset.revokeInvite); toast('Invite revoked'); reloadSettingsData(); }
+      catch(e){ toast('Could not revoke'); }
+    }, 'Revoke');
   }));
+
   document.getElementById('addConnectorBtn').addEventListener('click', openAddConnectorModal);
   document.querySelectorAll('[data-del-connector]').forEach(b=>b.addEventListener('click', ()=>{
     DATA.settings.connectors = DATA.settings.connectors.filter(c=>c.id!==b.dataset.delConnector); persist(); renderView();
@@ -2605,37 +2671,61 @@ function bindSettingsControls(){
     }, 'Clear log');
   });
 }
-function openAddTeamModal(){
+
+function openNewInviteModal(){
   openModal(`
-    <h3>Add team member</h3>
-    <div class="field"><label>Name</label><input id="mName"></div>
-    <div class="field"><label>Email</label><input id="mEmail"></div>
-    <div class="field"><label>Department</label><select id="mDept">${DEPARTMENTS.map(d=>`<option value="${d}">${d}</option>`).join('')}</select></div>
-    <div class="field"><label>Permission</label><select id="mPerm">${PERMISSIONS.map(p=>`<option value="${p}">${p}</option>`).join('')}</select></div>
+    <h3>New invite</h3>
     <div class="field">
-      <label>Personal passcode <span style="font-weight:400;color:var(--muted);">(their individual login — share it with them directly)</span></label>
-      <div class="row" style="gap:6px;">
-        <input id="mPass" value="${esc(genPasscode())}" style="font-family:var(--font-mono);letter-spacing:.05em;">
-        <button class="btn btn-sm" id="mPassRegen" type="button" title="Generate a new code">${ICONS.refresh||'↻'}</button>
-      </div>
+      <label>Email <span style="font-weight:400;color:var(--muted);">(optional — lock the link to one address)</span></label>
+      <input id="invEmail" type="email" placeholder="leave blank for anyone with the link">
+    </div>
+    <div class="field">
+      <label>Expires in</label>
+      <select id="invDays">
+        <option value="7" selected>7 days</option>
+        <option value="14">14 days</option>
+        <option value="30">30 days</option>
+      </select>
     </div>
     <div class="modal-actions">
       <button class="btn" id="mCancel">Cancel</button>
-      <button class="btn btn-primary" id="mSave">Add</button>
+      <button class="btn btn-primary" id="mSave">Create link</button>
     </div>
   `, body=>{
     body.querySelector('#mCancel').onclick = closeModal;
-    body.querySelector('#mPassRegen').onclick = ()=>{ body.querySelector('#mPass').value = genPasscode(); };
-    body.querySelector('#mSave').onclick = ()=>{
-      const name = body.querySelector('#mName').value.trim();
-      if (!name){ toast('Name required'); return; }
-      const passcode = body.querySelector('#mPass').value.trim();
-      if (passcode && DATA.team.some(t=>t.passcode && t.passcode===passcode)){
-        toast('That passcode is already assigned to someone else — generate a new one'); return;
-      }
-      DATA.team.push({id:'u'+Date.now(), name, email: body.querySelector('#mEmail').value.trim(), department: body.querySelector('#mDept').value, permission: body.querySelector('#mPerm').value, passcode});
-      persist(); closeModal(); renderView(); logActivity('Added a team member', name);
-      toast(passcode ? `Added — their passcode is ${passcode}` : 'Team member added');
+    body.querySelector('#mSave').onclick = async ()=>{
+      const save = body.querySelector('#mSave');
+      save.disabled = true;
+      try{
+        const inv = await invitesApi.create({
+          email: body.querySelector('#invEmail').value,
+          expiresDays: Number(body.querySelector('#invDays').value),
+        });
+        logActivity('Created an invite', inv.email || 'open link');
+        closeModal();
+        reloadSettingsData();
+        openInviteLinkModal(invitesApi.inviteLink(inv));
+      }catch(e){ toast('Could not create invite'); save.disabled = false; }
+    };
+  });
+}
+
+function openInviteLinkModal(link){
+  openModal(`
+    <h3>Invite link</h3>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Send this to the new teammate. It works once.</p>
+    <div class="field"><textarea id="invLink" readonly style="min-height:64px;">${esc(link)}</textarea></div>
+    <div class="modal-actions">
+      <button class="btn" id="mClose">Close</button>
+      <button class="btn btn-primary" id="mCopy">Copy</button>
+    </div>
+  `, body=>{
+    body.querySelector('#mClose').onclick = closeModal;
+    const ta = body.querySelector('#invLink');
+    ta.addEventListener('focus', ()=>ta.select());
+    body.querySelector('#mCopy').onclick = async ()=>{
+      try{ await navigator.clipboard.writeText(link); toast('Copied'); }
+      catch(e){ ta.select(); try{ document.execCommand('copy'); toast('Copied'); }catch(_){ toast('Select the text and copy it'); } }
     };
   });
 }
@@ -2661,73 +2751,231 @@ function openAddConnectorModal(){
   });
 }
 
-/* ---------- boot-time gate + one-time attribution prompt ---------- */
-function renderGate(){
-  const app = document.getElementById('app');
-  const individual = teamHasIndividualLogins();
-  app.innerHTML = `
-    <div class="gate-wrap">
-      <div class="gate-card">
-        <div class="gate-brand">AEROSUB</div>
-        <h2>Team access</h2>
-        <p>${individual
-          ? "This is a shared internal tool. Enter your personal passcode to sign in — if you don't have one yet, ask your admin, or use the shared team code and your name below."
-          : "This is a shared internal tool. Enter the access code your admin shared with you, and your name so actions can be attributed to you in the activity log."}</p>
-        <div class="field"><label>Passcode</label><input id="gateCode" type="password"></div>
-        <div class="field"><label>Your name ${individual?'<span style="font-weight:400;color:var(--muted);">(only needed with the shared team code)</span>':''}</label><input id="gateName" placeholder="e.g. Jane Doe" list="teamNames"></div>
-        <datalist id="teamNames">${DATA.team.filter(t=>t.name).map(t=>`<option value="${esc(t.name)}">`).join('')}</datalist>
-        <button class="btn btn-primary" id="gateSubmit" style="width:100%;justify-content:center;">Enter</button>
-        <div class="status" id="gateStatus" style="min-height:16px;color:var(--critical);font-size:11.5px;margin-top:8px;"></div>
-        <p class="gate-note">This only keeps out casual visitors — it isn't real per-user security, and it's visible to anyone who views this page's source. Data stays in this browser and does not sync between teammates.</p>
-      </div>
-    </div>
-  `;
-  const submit = ()=>{
-    const code = document.getElementById('gateCode').value;
-    const typedName = document.getElementById('gateName').value.trim();
-    const status = document.getElementById('gateStatus');
-    const member = code ? DATA.team.find(t=>t.name && t.passcode && t.passcode===code) : null;
-    const unlockAs = name=>{
-      try{ sessionStorage.setItem('aerosub_unlocked','true'); }catch(e){}
-      setCurrentUserName(name);
-      logActivity('Signed in');
-      renderApp();
+/* ============================================================
+   AUTH SCREENS — replaces the old passcode gate (PRD §5.4)
+   Sign in · Forgot password · Complete sign-up (with ?invite=) ·
+   Set new password · "check your inbox" · profile-less account.
+   ============================================================ */
+function authCard(inner){
+  document.getElementById('app').innerHTML =
+    `<div class="gate-wrap"><div class="gate-card">
+       <div class="gate-brand">AEROSUB</div>${inner}
+     </div></div>`;
+  try{ document.getElementById('modalScrim').classList.remove('open'); }catch(e){}
+}
+function authMsg(text, kind){
+  const el = document.getElementById('aMsg');
+  if (el){ el.textContent = text || ''; el.className = 'gate-msg' + (kind ? (' '+kind) : ''); }
+}
+function setAuthMode(mode){ AUTH.mode = mode; renderAuth(); }
+function bindEnter(ids, fn){
+  ids.forEach(id=>{
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('keydown', e=>{ if (e.key==='Enter'){ e.preventDefault(); fn(); } });
+  });
+}
+
+function renderAuth(){
+  if (AUTH.mode === 'loading'){ authCard(`<h2>Loading…</h2>`); return; }
+
+  if (AUTH.mode === 'signup'){
+    const lockEmail = !!AUTH.pinnedEmail;
+    authCard(`
+      <h2>Create your account</h2>
+      <p>You've been invited to the Aerosub Business Development Pipeline. Set up your login below.</p>
+      <div class="field"><label>Full name</label><input id="aName" autocomplete="name"></div>
+      <div class="field"><label>Email</label><input id="aEmail" type="email" autocomplete="username" value="${esc(AUTH.pinnedEmail)}" ${lockEmail?'readonly':''}></div>
+      <div class="field"><label>Password</label><input id="aPass" type="password" autocomplete="new-password" placeholder="At least 10 characters"></div>
+      <button class="btn btn-primary" id="aSubmit" style="width:100%;justify-content:center;">Create account</button>
+      <div class="gate-msg" id="aMsg"></div>
+      <button class="linklike gate-alt" id="aToSignin">Already have an account? Sign in</button>
+    `);
+    document.getElementById('aToSignin').onclick = ()=>setAuthMode('signin');
+    const submit = async ()=>{
+      const fullName = document.getElementById('aName').value.trim();
+      const email = document.getElementById('aEmail').value.trim();
+      const password = document.getElementById('aPass').value;
+      if (!fullName) return authMsg('Enter your name.', 'err');
+      if (!email) return authMsg('Enter your email.', 'err');
+      if (password.length < 10) return authMsg('Password must be at least 10 characters.', 'err');
+      const btn = document.getElementById('aSubmit'); btn.disabled = true; authMsg('Creating your account…');
+      try{
+        await signUpWithInvite({ fullName, email, password, token: AUTH.inviteToken });
+        AUTH.pendingEmail = email;
+        setAuthMode('sent-confirm');
+      }catch(e){ btn.disabled = false; authMsg(e.message || SIGNUP_FAILED_MESSAGE, 'err'); }
     };
-    if (member){ unlockAs(member.name); return; }
-    if (DATA.settings.accessCode && code === DATA.settings.accessCode){
-      if (!typedName){ status.textContent = 'Enter your name to continue.'; return; }
-      unlockAs(typedName);
+    document.getElementById('aSubmit').onclick = submit;
+    bindEnter(['aName','aEmail','aPass'], submit);
+    return;
+  }
+
+  if (AUTH.mode === 'sent-confirm'){
+    authCard(`
+      <h2>Check your inbox</h2>
+      <p>We sent a confirmation link to <b>${esc(AUTH.pendingEmail || 'your email')}</b>. Open it to finish setting up your account, then come back and sign in.</p>
+      <button class="btn btn-primary" id="aToSignin" style="width:100%;justify-content:center;">Back to sign in</button>
+    `);
+    document.getElementById('aToSignin').onclick = ()=>setAuthMode('signin');
+    return;
+  }
+
+  if (AUTH.mode === 'reset'){
+    authCard(`
+      <h2>Reset password</h2>
+      <p>Enter your email and we'll send a link to set a new password.</p>
+      <div class="field"><label>Email</label><input id="aEmail" type="email" autocomplete="username"></div>
+      <button class="btn btn-primary" id="aSubmit" style="width:100%;justify-content:center;">Send reset link</button>
+      <div class="gate-msg" id="aMsg"></div>
+      <button class="linklike gate-alt" id="aToSignin">Back to sign in</button>
+    `);
+    document.getElementById('aToSignin').onclick = ()=>setAuthMode('signin');
+    const submit = async ()=>{
+      const email = document.getElementById('aEmail').value.trim();
+      if (!email) return authMsg('Enter your email.', 'err');
+      const btn = document.getElementById('aSubmit'); btn.disabled = true; authMsg('Sending…');
+      try{ await resetPassword(email); }catch(e){ /* never reveal whether the address exists */ }
+      AUTH.pendingEmail = email;
+      setAuthMode('sent-reset');
+    };
+    document.getElementById('aSubmit').onclick = submit;
+    bindEnter(['aEmail'], submit);
+    return;
+  }
+
+  if (AUTH.mode === 'sent-reset'){
+    authCard(`
+      <h2>Check your inbox</h2>
+      <p>If an account exists for <b>${esc(AUTH.pendingEmail || 'that address')}</b>, a password-reset link is on its way.</p>
+      <button class="btn btn-primary" id="aToSignin" style="width:100%;justify-content:center;">Back to sign in</button>
+    `);
+    document.getElementById('aToSignin').onclick = ()=>setAuthMode('signin');
+    return;
+  }
+
+  if (AUTH.mode === 'set-password'){
+    authCard(`
+      <h2>Set a new password</h2>
+      <p>Choose a new password for your account.</p>
+      <div class="field"><label>New password</label><input id="aPass" type="password" autocomplete="new-password" placeholder="At least 10 characters"></div>
+      <div class="field"><label>Confirm password</label><input id="aPass2" type="password" autocomplete="new-password"></div>
+      <button class="btn btn-primary" id="aSubmit" style="width:100%;justify-content:center;">Update password</button>
+      <div class="gate-msg" id="aMsg"></div>
+    `);
+    const submit = async ()=>{
+      const pw = document.getElementById('aPass').value;
+      const pw2 = document.getElementById('aPass2').value;
+      if (pw.length < 10) return authMsg('Password must be at least 10 characters.', 'err');
+      if (pw !== pw2) return authMsg('Passwords do not match.', 'err');
+      const btn = document.getElementById('aSubmit'); btn.disabled = true; authMsg('Updating…');
+      try{
+        await updatePassword(pw);
+        toast('Password updated');
+        await enterApp();
+      }catch(e){ btn.disabled = false; authMsg(e.message || 'Could not update password.', 'err'); }
+    };
+    document.getElementById('aSubmit').onclick = submit;
+    bindEnter(['aPass','aPass2'], submit);
+    return;
+  }
+
+  if (AUTH.mode === 'no-profile'){
+    authCard(`
+      <h2>Account not active</h2>
+      <p>You're signed in, but this account isn't a member of the Aerosub pipeline. Your invite may not have been completed, or your access was removed. Ask a teammate for a fresh invite link.</p>
+      <button class="btn btn-primary" id="aSignOut" style="width:100%;justify-content:center;">Sign out</button>
+    `);
+    document.getElementById('aSignOut').onclick = async ()=>{ await signOut(); };
+    return;
+  }
+
+  // default: sign in
+  authCard(`
+    <h2>Sign in</h2>
+    <p>Aerosub Business Development Pipeline — team access.</p>
+    <div class="field"><label>Email</label><input id="aEmail" type="email" autocomplete="username"></div>
+    <div class="field"><label>Password</label><input id="aPass" type="password" autocomplete="current-password"></div>
+    <button class="btn btn-primary" id="aSubmit" style="width:100%;justify-content:center;">Sign in</button>
+    <div class="gate-msg" id="aMsg"></div>
+    <button class="linklike gate-alt" id="aForgot">Forgot password?</button>
+    ${AUTH.inviteToken ? `<button class="linklike gate-alt" id="aToSignup">Have an invite? Create your account</button>` : ''}
+  `);
+  document.getElementById('aForgot').onclick = ()=>setAuthMode('reset');
+  const toSignup = document.getElementById('aToSignup');
+  if (toSignup) toSignup.onclick = ()=>setAuthMode('signup');
+  const submit = async ()=>{
+    const email = document.getElementById('aEmail').value.trim();
+    const password = document.getElementById('aPass').value;
+    if (!email || !password) return authMsg('Enter your email and password.', 'err');
+    const btn = document.getElementById('aSubmit'); btn.disabled = true; authMsg('Signing in…');
+    try{
+      await signIn({ email, password });
+      logActivity('Signed in');   // only on an explicit password submit (HT11)
+      // onAuthChange('SIGNED_IN') -> enterApp()
+    }catch(e){
+      btn.disabled = false;
+      const m = /email not confirmed/i.test(e.message||'')
+        ? 'Confirm your email first — check your inbox for the link.'
+        : /invalid login credentials/i.test(e.message||'')
+        ? 'Wrong email or password.'
+        : (e.message || 'Could not sign in.');
+      authMsg(m, 'err');
+    }
+  };
+  document.getElementById('aSubmit').onclick = submit;
+  bindEnter(['aEmail','aPass'], submit);
+}
+
+/* ============================================================
+   BOOT — session -> profile -> app, else an auth screen (PRD §5.5)
+   ============================================================ */
+async function enterApp(){
+  const profile = await myProfile();
+  if (!profile){ AUTH.profile = null; setAuthMode('no-profile'); return; }
+  AUTH.profile = profile;
+  AUTH.mode = 'app';
+  SETTINGS.loaded = false;
+  if (location.search.indexOf('invite=') !== -1 || location.search.indexOf('email=') !== -1){
+    const u = new URL(location.href);
+    u.searchParams.delete('invite'); u.searchParams.delete('email');
+    history.replaceState({}, '', u.pathname + (u.search || '') + u.hash);
+  }
+  renderApp();
+}
+
+async function boot(){
+  const params = new URLSearchParams(location.search);
+  AUTH.inviteToken = params.get('invite') || null;
+  AUTH.pinnedEmail = params.get('email') || '';
+
+  onAuthChange(async (event, session)=>{
+    AUTH.session = session || null;
+    if (event === 'PASSWORD_RECOVERY'){ setAuthMode('set-password'); return; }
+    if (event === 'SIGNED_OUT'){
+      AUTH.profile = null;
+      setAuthMode(AUTH.inviteToken ? 'signup' : 'signin');
       return;
     }
-    status.textContent = individual ? 'Incorrect passcode.' : 'Incorrect code.';
-  };
-  document.getElementById('gateSubmit').addEventListener('click', submit);
-  document.getElementById('gateName').addEventListener('keydown', e=>{ if (e.key==='Enter') submit(); });
-  document.getElementById('gateCode').addEventListener('keydown', e=>{ if (e.key==='Enter') submit(); });
-}
-function isUnlocked(){
-  if (!DATA.settings.accessCode && !teamHasIndividualLogins()) return true;
-  try{ return sessionStorage.getItem('aerosub_unlocked')==='true'; }catch(e){ return false; }
-}
-function maybePromptForName(){
-  if (currentUserName()) return;
-  openModal(`
-    <h3>Who's using this?</h3>
-    <p style="font-size:12px;color:var(--muted);margin-bottom:12px;">Just for attributing actions in the activity log — this name stays in your browser only.</p>
-    <div class="field"><label>Your name</label><input id="mName" list="teamNamesInline"></div>
-    <datalist id="teamNamesInline">${DATA.team.filter(t=>t.name).map(t=>`<option value="${esc(t.name)}">`).join('')}</datalist>
-    <div class="modal-actions">
-      <button class="btn" id="mSkip">Skip for now</button>
-      <button class="btn btn-primary" id="mSave">Continue</button>
-    </div>
-  `, body=>{
-    body.querySelector('#mSkip').onclick = closeModal;
-    body.querySelector('#mSave').onclick = ()=>{
-      const name = body.querySelector('#mName').value.trim();
-      if (name){ setCurrentUserName(name); logActivity('Signed in'); }
-      closeModal();
-    };
+    if (event === 'SIGNED_IN'){
+      if (AUTH.mode === 'set-password') return;   // recovery session — wait for the new password
+      if (AUTH.mode === 'app') return;
+      await enterApp();
+      return;
+    }
+    if (event === 'USER_UPDATED'){
+      if (AUTH.mode !== 'app') return;
+      const p = await myProfile();
+      if (!p){ AUTH.profile = null; setAuthMode('no-profile'); }
+      else AUTH.profile = p;
+      return;
+    }
+    // TOKEN_REFRESHED / INITIAL_SESSION — nothing to do here
   });
+
+  const session = await getSession();
+  AUTH.session = session;
+  if (!session){ setAuthMode(AUTH.inviteToken ? 'signup' : 'signin'); return; }
+  await enterApp();
 }
 
 /* ============================================================
@@ -3166,11 +3414,6 @@ function doImport(e){
 }
 
 /* ============================================================
-   BOOT
+   BOOT — kick off the auth flow (definitions above, PRD §5.5)
    ============================================================ */
-if (isUnlocked()){
-  renderApp();
-  maybePromptForName();
-} else {
-  renderGate();
-}
+boot();
