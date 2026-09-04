@@ -90,7 +90,7 @@ export function activityFromRow(row) {
 }
 
 /* ============================================================
-   app-shape -> row (toRow) — only for the entities HT4 writes
+   app-shape -> row (toRow) — only for the entities with a real api/*.js
    ============================================================ */
 
 export function companyToRow(c) {
@@ -102,6 +102,13 @@ export function companyToRow(c) {
 }
 export function newsToRow(n) {
   return { title: n.title, source: n.source || null, url: n.url || null, date: n.date, kind: n.kind || null, ref_id: n.refId || null };
+}
+export function contactToRow(ct) {
+  return {
+    name: ct.name, position: ct.pos || null, email: ct.email || null, phone: ct.phone || null,
+    linkedin: ct.linkedin || null, verified: !!ct.verified,
+    last_contact: ct.lastContact || null, next_follow_up: ct.nextFollowUp || null,
+  };
 }
 
 /* ============================================================

@@ -13,10 +13,10 @@ Companion docs: [PRD.md](PRD.md), [AUDIT.md](AUDIT.md). Refs like "PRD §16 S-3"
 | 1 — Audit (`AUDIT.md`) | ✅ |
 | 2 — PRD (`PRD.md`) | ✅ (re-scoped down after the "not over-engineered?" review — 18 tables, no realtime) |
 | 3 — Heavy Tasks (`TASKS.md`) | ✅ + build-readiness pass done (2026-09-04) |
-| 4 — Execute | 🟢 **HT0 + HT1 + HT3 + HT2 + HT4 done (2026-09-04).** Next: HT5 (Contacts). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
+| 4 — Execute | 🟢 **HT0 + HT1 + HT3 + HT2 + HT4 + HT5 done (2026-09-04).** Next: HT6 (Competition). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
 | 5 — Final report | pending |
 
-Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema + seed; `npm run db:check` = 41/41 structural; `npm run test:rls` = anon fully denied; `npm run test:invite` = 25/25 invite/signup matrix; `npm run check:secrets` = clean; `npm run smoke` = real-browser sign-in + dashboard render (now against real Supabase-sourced companies/news, not the localStorage seed); `npx vitest run` = 16/16 store.js mapping tests.
+Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema + seed; `npm run db:check` = 41/41 structural; `npm run test:rls` = anon fully denied; `npm run test:invite` = 25/25 invite/signup matrix; `npm run check:secrets` = clean; `npm run smoke` = real-browser sign-in + dashboard render (now against real Supabase-sourced companies/news, not the localStorage seed); `npx vitest run` = 26/26 (store.js mapping + validate.js).
 
 **What's needed, and when:**
 - **Now** — HT0. Needs Node + npm (present).
@@ -122,13 +122,14 @@ Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema
 
 **Acceptance criteria:** Global list, verified-first, search, edit, mark-contacted, `mailto:` draft, promote-from-research — persist to `contacts`. Validators run on changed fields only.
 
-- [ ] `src/api/contacts.js` — `create` (client id), `update`, `remove`, `markContacted`, `setFollowUp`.
-- [ ] Rewire `renderContacts`/`bindContactsControls`/`renderContactRow`/`openAddContactModal`/`openEditContactModal`/`findContact`.
-- [ ] `openEmailModal` — keep `mailto:`; log via `api/activity`.
-- [ ] "Promote contact" (Research) → `contacts` insert with `company_id`.
-- [ ] `validate.js` `email`/`linkedin` — changed-fields-only, normalise.
-- [ ] Regression: Contacts checklist.
-  - ↳ note:
+- [x] `src/api/contacts.js` — `create` (client id), `update`, `remove`, `markContacted`, `setFollowUp`.
+- [x] Rewire `openAddContactModal`/`openEditContactModal`/the drawer's "Add contact"/"Mark contacted" handlers onto the real API.
+  - ↳ note: `renderContacts`/`bindContactsControls`/`renderContactRow`/`findContact` needed **no changes** — they were already pure reads against `DATA`, which store.js made Supabase-shaped back in HT4. "Rewire" only meant the write paths (the two modals + the drawer buttons).
+- [x] `openEmailModal` — `mailto:` unchanged; still logs via the local `logActivity()`, not `api/activity` — that module doesn't exist until HT11, and every Heavy Task so far (HT2, HT4) has kept using `logActivity()` for the same reason. No behaviour change from the user's side; HT11 swaps the implementation, not the call sites.
+- [x] "Promote contact" (Research) → `contacts` insert with `company_id`, via the same `contactsApi.create()`.
+- [x] `src/validate.js` (new) — `emailRule`, `normalizeLinkedin`, `validateChanged(before, after, rules)` (changed-fields-only, per PRD §8.3.1 — a masked seeded email doesn't block an unrelated phone edit). 7 Vitest tests. This is the pattern HT13 extends into the full module (caps, enums, url normalisation).
+- [x] Regression: Contacts checklist — verified in a real browser (see below), plus `npm run smoke`/full views click-through from HT4 still green (contacts render fine either way since store.js already fed them real data).
+  - ↳ **verification**: `npx vitest run` (26/26, +10 new: 2 contact mapping + 8 validate.js) · `npm run db:check` (41/41) · `npm run test:rls` (20/20) · `npm run test:invite` (25/25) · `npm run smoke` (7/7) · a dedicated real-browser pass (10/10, script deleted after use): add contact from the Contacts view, LinkedIn normalisation (`https://www.linkedin.com/...` → `linkedin.com/...`), an invalid email correctly **rejected client-side with the DB left unchanged**, the corrected edit then saving, mark-contacted writing `last_contact`, promoting a research clip to a real contact, deleting a contact, and the promoted contact **surviving a full page reload**. DB reset to a clean seed afterward.
 
 ---
 

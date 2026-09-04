@@ -1,7 +1,7 @@
-// Unit tests for the row <-> app-shape mapping (PRD §6.20, HT4).
+// Unit tests for the row <-> app-shape mapping (PRD §6.20, HT4/HT5).
 import { describe, it, expect } from 'vitest';
 import {
-  companyFromRow, companyToRow, flagFromRow, contactFromRow, recommendedFromRow,
+  companyFromRow, companyToRow, flagFromRow, contactFromRow, contactToRow, recommendedFromRow,
   productFromRow, taskFromRow, competitorFromRow, campaignFromRow,
   newsFromRow, newsToRow, researchFromRow, eventFromRow, attendeeFromRow,
   connectorFromRow, activityFromRow,
@@ -45,6 +45,18 @@ describe('nested company entities', () => {
     expect(ct.pos).toBe('CFO');
     expect(ct.verified).toBe(true);
     expect(ct.nextFollowUp).toBe('');
+  });
+
+  it('round-trips a contact through contactToRow -> contactFromRow', () => {
+    const app = { name: 'Jane Doe', pos: 'CFO', email: 'jane@example.com', phone: '+1', linkedin: 'linkedin.com/in/jane', verified: true, lastContact: '2026-01-01', nextFollowUp: '2026-02-01' };
+    const row = contactToRow(app);
+    expect(row.position).toBe('CFO');
+    expect(row.last_contact).toBe('2026-01-01');
+    expect(row.next_follow_up).toBe('2026-02-01');
+    const back = contactFromRow({ id: 'ct2', company_id: 'c1', ...row });
+    expect(back.pos).toBe(app.pos);
+    expect(back.verified).toBe(true);
+    expect(back.nextFollowUp).toBe(app.nextFollowUp);
   });
 
   it('maps company_products -> {sol, why} (the "recommended" shape)', () => {

@@ -8,6 +8,8 @@ import * as invitesApi from './api/invites.js';
 import * as store from './store.js';
 import * as companiesApi from './api/companies.js';
 import * as newsApi from './api/news.js';
+import * as contactsApi from './api/contacts.js';
+import { emailRule, normalizeLinkedin, validateChanged } from './validate.js';
 
 /* ============================================================
    ICONS (tiny inline SVGs)
@@ -1498,9 +1500,15 @@ function bindDrawer(c){
   document.getElementById('addContactInline').addEventListener('click', ()=>openAddContactModal(c.id));
   document.querySelectorAll('[data-edit-contact]').forEach(b=>b.addEventListener('click', ()=>openEditContactModal(b.dataset.editContact)));
   document.querySelectorAll('[data-email-contact]').forEach(b=>b.addEventListener('click', ()=>openEmailModal(b.dataset.emailContact)));
-  document.querySelectorAll('[data-mark-contacted]').forEach(b=>b.addEventListener('click', ()=>{
+  document.querySelectorAll('[data-mark-contacted]').forEach(b=>b.addEventListener('click', async ()=>{
     const ct = findContact(b.dataset.markContacted);
-    if (ct){ ct.lastContact = new Date().toISOString().slice(0,10); persist(); toast('Marked as contacted today'); openDrawer(c.id); }
+    if (!ct) return;
+    const today = new Date().toISOString().slice(0,10);
+    try{
+      const saved = await contactsApi.markContacted(ct.id, today);
+      Object.assign(ct, saved);
+      toast('Marked as contacted today'); openDrawer(c.id);
+    }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
   }));
 
   document.querySelectorAll('[data-toggle-task]').forEach(b=>b.addEventListener('change', ()=>{
@@ -1960,17 +1968,20 @@ function bindResearchControls(){
     const r = DATA.research.find(x=>x.id===sel.dataset.linkCompany);
     if (r){ r.companyId = e.target.value; persist(); renderView(); }
   }));
-  document.querySelectorAll('[data-promote-contact]').forEach(b=>b.addEventListener('click', ()=>{
+  document.querySelectorAll('[data-promote-contact]').forEach(b=>b.addEventListener('click', async ()=>{
     const r = DATA.research.find(x=>x.id===b.dataset.promoteContact);
     const co = r && companyById(r.companyId);
-    if (r && co){
-      co.contacts.push({
-        id: co.id+'-c'+Date.now(), companyId: co.id, name:r.contactName, pos:'From research clip',
-        email:r.contactEmail||'', phone:r.contactPhone||'', linkedin:r.contactLinkedin||'',
-        verified:false, lastContact:'', nextFollowUp:''
-      });
-      persist(); renderApp(); toast(`Added ${r.contactName} to ${co.name}`);
-    }
+    if (!r || !co) return;
+    const ct = {
+      id: crypto.randomUUID(), name: r.contactName, pos: 'From research clip',
+      email: r.contactEmail || '', phone: r.contactPhone || '', linkedin: normalizeLinkedin(r.contactLinkedin),
+      verified: false, lastContact: '', nextFollowUp: '',
+    };
+    try{
+      const saved = await contactsApi.create(co.id, ct);
+      co.contacts.push(saved);
+      renderApp(); toast(`Added ${r.contactName} to ${co.name}`);
+    }catch(e){ toast('Could not add contact — ' + (e.message || 'try again')); }
   }));
 }
 function openAddResearchModal(){
@@ -3259,22 +3270,28 @@ function openAddContactModal(companyId){
     </div>
   `, body=>{
     body.querySelector('#mCancel').onclick = closeModal;
-    body.querySelector('#mSave').onclick = ()=>{
+    body.querySelector('#mSave').onclick = async ()=>{
       const co = companyById(body.querySelector('#mCo').value);
       const name = body.querySelector('#mName').value.trim();
       if (!co || !name){ toast('Company and name required'); return; }
+      const email = body.querySelector('#mEmail').value.trim();
+      const linkedin = normalizeLinkedin(body.querySelector('#mLi').value);
+      const { ok, errors } = validateChanged({email:''}, {email}, {email: emailRule});
+      if (!ok){ toast(errors.email); return; }
       const ct = {
-        id: co.id+'-c'+Date.now(), companyId:co.id, name,
+        id: crypto.randomUUID(), name,
         pos: body.querySelector('#mPos').value.trim(),
-        email: body.querySelector('#mEmail').value.trim(),
-        phone: body.querySelector('#mPhone').value.trim(),
-        linkedin: body.querySelector('#mLi').value.trim(),
+        email, phone: body.querySelector('#mPhone').value.trim(), linkedin,
         verified:false, lastContact:'', nextFollowUp:''
       };
-      co.contacts.push(ct);
-      persist(); logActivity('Added a contact', `${name} — ${co.name}`); closeModal(); renderApp();
-      if (ui.drawerCompanyId===co.id) openDrawer(co.id);
-      toast('Contact added');
+      const save = body.querySelector('#mSave'); save.disabled = true;
+      try{
+        const saved = await contactsApi.create(co.id, ct);
+        co.contacts.push(saved);
+        logActivity('Added a contact', `${name} — ${co.name}`); closeModal(); renderApp();
+        if (ui.drawerCompanyId===co.id) openDrawer(co.id);
+        toast('Contact added');
+      }catch(e){ toast('Could not add contact — ' + (e.message || 'try again')); save.disabled = false; }
     };
   });
 }
@@ -3303,23 +3320,35 @@ function openEditContactModal(contactId){
     const emailBtn = body.querySelector('#mEmailBtn');
     if (emailBtn) emailBtn.onclick = ()=>openEmailModal(ct.id);
     body.querySelector('#mDelete').onclick = ()=>{
-      openConfirmModal('Delete this contact?', ()=>{
-        co.contacts = co.contacts.filter(x=>x.id!==ct.id);
-        persist(); closeModal(); renderApp();
-        if (ui.drawerCompanyId===co.id) openDrawer(co.id);
-        toast('Contact deleted');
+      openConfirmModal('Delete this contact?', async ()=>{
+        try{
+          await contactsApi.remove(ct.id);
+          co.contacts = co.contacts.filter(x=>x.id!==ct.id);
+          closeModal(); renderApp();
+          if (ui.drawerCompanyId===co.id) openDrawer(co.id);
+          toast('Contact deleted');
+        }catch(e){ toast('Could not delete — ' + (e.message || 'try again')); }
       });
     };
-    body.querySelector('#mSave').onclick = ()=>{
-      ct.name = body.querySelector('#mName').value.trim();
-      ct.pos = body.querySelector('#mPos').value.trim();
-      ct.email = body.querySelector('#mEmail').value.trim();
-      ct.phone = body.querySelector('#mPhone').value.trim();
-      ct.linkedin = body.querySelector('#mLi').value.trim();
-      ct.nextFollowUp = body.querySelector('#mFollow').value;
-      persist(); closeModal(); renderApp();
-      if (ui.drawerCompanyId===co.id) openDrawer(co.id);
-      toast('Contact saved');
+    body.querySelector('#mSave').onclick = async ()=>{
+      const patch = {
+        name: body.querySelector('#mName').value.trim(),
+        pos: body.querySelector('#mPos').value.trim(),
+        email: body.querySelector('#mEmail').value.trim(),
+        phone: body.querySelector('#mPhone').value.trim(),
+        linkedin: normalizeLinkedin(body.querySelector('#mLi').value),
+        nextFollowUp: body.querySelector('#mFollow').value,
+      };
+      const { ok, errors } = validateChanged(ct, patch, { email: emailRule });
+      if (!ok){ toast(errors.email); return; }
+      const save = body.querySelector('#mSave'); save.disabled = true;
+      try{
+        const saved = await contactsApi.update(ct.id, patch);
+        Object.assign(ct, saved);
+        closeModal(); renderApp();
+        if (ui.drawerCompanyId===co.id) openDrawer(co.id);
+        toast('Contact saved');
+      }catch(e){ toast('Could not save — ' + (e.message || 'try again')); save.disabled = false; }
     };
   });
 }
