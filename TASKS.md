@@ -13,8 +13,10 @@ Companion docs: [PRD.md](PRD.md), [AUDIT.md](AUDIT.md). Refs like "PRD §16 S-3"
 | 1 — Audit (`AUDIT.md`) | ✅ |
 | 2 — PRD (`PRD.md`) | ✅ (re-scoped down after the "not over-engineered?" review — 18 tables, no realtime) |
 | 3 — Heavy Tasks (`TASKS.md`) | ✅ + build-readiness pass done (2026-09-04) |
-| 4 — Execute | 🟢 **HT0 done (2026-09-04).** Next: HT1 (needs `supabase start` / Docker). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
+| 4 — Execute | 🟢 **HT0 + HT1 done, HT3 done (2026-09-04).** Next: HT2 (auth/invite flow). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
 | 5 — Final report | pending |
+
+Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema + seed; `npm run db:check` = 41/41 structural; `npm run test:rls` = anon fully denied; `npm run check:secrets` = clean.
 
 **What's needed, and when:**
 - **Now** — HT0. Needs Node + npm (present).
@@ -45,20 +47,20 @@ Companion docs: [PRD.md](PRD.md), [AUDIT.md](AUDIT.md). Refs like "PRD §16 S-3"
 
 **Acceptance criteria:** All **18** tables (PRD §6) via committed timestamped migrations; `enable` + `force row level security` on all 18; functions `is_member`, `set_updated_at`, `handle_new_user`, `log_stage_change` + the `profiles` column-lock trigger exist, owned by the `BYPASSRLS` migration role (`postgres` locally); `config.toml` + migrations committed; no secrets committed. **`supabase db reset` (local) applies the schema clean on an empty DB** (the seed is HT3 — a deliberate forward reference; HT1's last subtask and this clause complete once HT3's `seed.sql` exists).
 
-- [ ] `supabase init`; commit `config.toml`; `.env.example` (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`). Dev = `supabase start` (Docker). `config.toml`: `[auth] enable_confirmations = true`, `site_url = "http://localhost:5173"`, `additional_redirect_urls` incl. the same; `[db.seed] enabled = true` (so `db reset` runs `supabase/seed.sql`).
-- [ ] `0001_extensions.sql` — confirm `pgcrypto` in schema `extensions` (`gen_random_bytes` called as `extensions.gen_random_bytes`; `gen_random_uuid()` is core).
-- [ ] `0002_helpers.sql` — `set_updated_at()`; `is_member()` per PRD §7.1 verbatim (`security definer`, `search_path=''`, revoke from public/anon, grant to authenticated).
-- [ ] `0003_profiles_invites.sql` — `profiles` (`email unique`; mutable → `updated_at` + `set_updated_at`) + a `BEFORE UPDATE` trigger rejecting `id`/`email` changes; `invites` (`token` default `encode(extensions.gen_random_bytes(16),'hex')`, `expires_at` CHECK `≤ created_at + interval '30 days'`); **`handle_new_user()`** per PRD §5.2 — one `AFTER INSERT ON auth.users` `SECURITY DEFINER` fn: conditional `UPDATE invites … WHERE token=v_token AND consumed_at IS NULL AND expires_at > now() AND (email IS NULL OR lower(email)=lower(new.email))` → `RAISE` if `NOT FOUND` → `INSERT INTO profiles`. (No separate `enforce_invite` — PRD §16 S-8.)
-- [ ] `0004_companies.sql` — `companies` (incl. `pain_points text[] default '{}'`, `current_solutions text[] default '{}'`), `company_flags` (+ CHECKs, cascade FKs, `set_updated_at`, indexes PRD §6.19).
-- [ ] `0005_stage_history.sql` — `company_stage_changes` (**append-only: `id` + `created_at` only, no `updated_at`, no `set_updated_at`**) + `log_stage_change()` `AFTER UPDATE` on `companies` when `new.stage is distinct from old.stage`.
-- [ ] `0006_contacts_products.sql` — `contacts`, `products` (incl. `highlights text[]`), `company_products` (**`unique (company_id, product_id)`**).
-- [ ] `0007_competition_plan.sql` — `competitors`, `competitor_campaigns`, `tasks` (`company_id text NULL FK companies **on delete cascade**`).
-- [ ] `0008_research_events_news.sql` — `research_clips`, `events` (incl. `benefits text[]`), `event_attendees`, `news_items` (`kind text check (kind is null or kind in ('company','product'))`).
-- [ ] `0009_settings.sql` — `connectors`, `activity_log` (**append-only: no `updated_at`/`set_updated_at`**), `app_settings` (`check (id=1)` + `insert (id) values (1) on conflict do nothing`).
-- [ ] `0010_rls.sql` — `enable` + `force row level security` on all 18; the standard 4 policies (PRD §7.2, every predicate `(select public.is_member())`) on the 15 standard tables (incl. the extra `created_by = auth.uid()` on the `invites` insert policy); specific policies for `profiles`, `activity_log`, `company_stage_changes` (PRD §7.3).
-- [ ] `supabase db reset` → schema applies clean on an empty DB, no errors. Commit. (Re-run after HT3 to confirm schema + seed.)
-- [ ] `scripts/check-no-secrets.sh` — flags `service_role` / `SUPABASE_SERVICE_ROLE` / PEM blocks / any `eyJ…` JWT whose payload decodes to `"role":"service_role"`; **does not** flag the anon key (PRD §8.2). Wired into pre-commit; passes.
-  - ↳ note:
+- [x] `supabase init`; `config.toml` committed with `[auth] enable_confirmations = true`, `minimum_password_length = 10`, `site_url`/`additional_redirect_urls` = `http://localhost:5173`, `[db.seed] enabled` (default). `.env` / `.env.test` (git-ignored, local demo keys) + `.env.example` committed.
+- [x] `20260904120001_extensions.sql` — `pgcrypto` in `extensions`.
+- [x] `20260904120002_helpers.sql` — `set_updated_at()`. (`is_member()` moved to 0003 — a `language sql` fn can't reference `public.profiles` before it exists.)
+- [x] `20260904120003_profiles_invites.sql` — `profiles` (+ `set_updated_at` + the id/email lock trigger); `invites` (token default `encode(extensions.gen_random_bytes(16),'hex')`, `≤ +30d` CHECK, token/consumed_at indexes); `is_member()` (`language sql`, definer, `search_path=''`, revoke anon/public); `handle_new_user()` (one AFTER INSERT trigger — consume invite via conditional `UPDATE … row_count`, `RAISE` on 0, then `INSERT profiles`).
+- [x] `20260904120004_companies.sql` — `companies` (+ `text[]` lists, CHECKs, length caps) + `company_flags` (+ index).
+- [x] `20260904120005_stage_history.sql` — `company_stage_changes` (append-only) + `log_stage_change()` AFTER UPDATE trigger.
+- [x] `20260904120006_contacts_products.sql` — `contacts`, `products`, `company_products` (`unique (company_id, product_id)`).
+- [x] `20260904120007_competition_plan.sql` — `competitors`, `competitor_campaigns`, `tasks` (`company_id` FK **on delete cascade**).
+- [x] `20260904120008_research_events_news.sql` — `research_clips`, `events`, `event_attendees`, `news_items` (`kind` nullable CHECK).
+- [x] `20260904120009_settings.sql` — `connectors`, `activity_log` (append-only), `app_settings` (singleton + seeds its row).
+- [x] `20260904120010_rls.sql` — DO-loop applies enable+force+4 policies to the 15 flat tables; `invites` insert tightened to `created_by = auth.uid()`; explicit `profiles` / `activity_log` / `company_stage_changes` policies; `grant … to authenticated` + `revoke all … from anon`. **66 policies.**
+- [x] `supabase db reset` → schema + seed apply clean. `scripts/db-check.mjs` = 41/41 (18 tables RLS enabled+forced, 66 policies, seed counts, append-only cols, auth trigger). `scripts/rls-test.mjs` = anon denied on all 18 (select + insert), service_role bypasses.
+- [x] `scripts/check-no-secrets.sh` — decodes JWT payloads, flags only `role:service_role`; PEM blocks; `SERVICE_ROLE_KEY=` assignments in code. Clean on the tree; catches a planted key. Wired via `core.hooksPath=.githooks` (`.githooks/pre-commit`).
+  - ↳ note: local PG is **17.6** (not 15). `is_member()` had to move from 0002→0003. `handle_new_user` uses `get diagnostics … row_count` for the atomic single-use check. `force row level security` is inert here (postgres has BYPASSRLS) but kept per PRD §7.4.
 
 ---
 
@@ -81,15 +83,14 @@ Companion docs: [PRD.md](PRD.md), [AUDIT.md](AUDIT.md). Refs like "PRD §16 S-3"
 
 ## 3. Seed Migration (seed → SQL)
 
-**Acceptance criteria:** `supabase/seed.sql` loads the baseline (10 companies + flags/contacts/tags, 6 products, 10 competitors + campaigns, 12 tasks, 6 news, 6 events + attendees, 3 connectors) with FK integrity; `pain_points`/`current_solutions`/`highlights`/`benefits` as `text[]` literals; task + news dates land relative to today. **`supabase db reset` now reproduces schema + seed from zero** (completes HT1's last clause); running `seed.sql` twice → no dupes.
+**Acceptance criteria:** `supabase/seed.sql` loads the baseline (10 companies + flags/contacts/tags, 6 products, 10 competitors + campaigns, 12 tasks, 6 news, 6 events + attendees, 3 connectors) with FK integrity; `pain_points`/`current_solutions`/`highlights`/`benefits` as `text[]` literals; task + news dates land relative to today. `supabase db reset` reproduces schema + seed from zero; running `seed.sql` twice → no dupes.
 
-- [ ] `scripts/seed-source.mjs` — `seedData()` + `SOLUTIONS` + `STAGES` verbatim from `app/aerosub_crm.html` (comment cites lines). Running `seedData()` resolves the closures, so contacts/campaign/attendee ids are already stamped and dates are already concrete.
-- [ ] `scripts/extract-seed.mjs` — object graph → `seed.sql`: FK order (PRD §10.2); scalar lists → `'{...}'` array literals; `recommended[]` → `company_products (product_id, rationale)`; for `tasks.due` / `news.date`, compute `N = (resolvedDate − today)` in days and emit `current_date + N` (not the hardcoded date) so the seed stays fresh whenever applied; `on conflict (id) do nothing`; **assert** every `recommended[].sol` resolves to a seeded product and every `attendee.companyId` is `''`/null or a seeded company.
-- [ ] Generate; `supabase db reset`; verify per-entity row counts; spot-check `seplat` (contacts, flags, pain points, current solutions, tagged products) + `nestoil` (the critical flag).
-- [ ] `seed.sql` again → counts unchanged.
-- [ ] Re-confirm HT1: `supabase db reset` = clean schema + seed, no errors.
-- [ ] *(low priority — OQ-4)* `src/migrate-local.js` + Settings "Migrate my local data" (upsert-merge, PRD §10.6). One sample-export test. Can be dropped if the founder confirms nothing beyond seed.
-  - ↳ note:
+- [x] `scripts/gen-seed-source.mjs` — slices `SOLUTIONS`/`STAGES`/`PRIORITIES`/`seedData()` **verbatim** out of `src/main.js` by bracket-matching → `scripts/seed-source.generated.mjs` (with `export`s). Zero transcription risk; re-run if the prototype seed changes.
+- [x] `scripts/extract-seed.mjs` — runs `seedData()` → `supabase/seed.sql`: FK order (PRD §10.2); scalar lists → `array[…]::text[]`; `recommended[]` → `company_products (product_id, rationale)`; `tasks.due` / `news.date` → `current_date + <offset>` (offset derived by diffing the value seedData() produced today); `on conflict (id) do nothing`; **asserts** every `recommended[].sol` is a seeded product, every `attendee.companyId`/`task.companyId` is empty or a seeded company, every `company.stage` is a valid stage id.
+- [x] `npm run db:reset` → applies. `db-check.mjs` confirms counts: companies 10, contacts 59, flags 3, tags 21, products 6, competitors 10, campaigns 11, tasks 12, news 6, events 6, attendees 10, connectors 3. Spot check: `seplat` = 9 contacts / 0 flags / 4 pain / 4 current / 3 tags / 2 verified; `nestoil` = 1 critical flag. Dates rebased (tasks −1..+60d, news −10..−2d relative to today).
+- [x] `seed.sql` applied again by hand → counts unchanged (idempotent).
+- [ ] *(low priority — OQ-4)* `src/migrate-local.js` + Settings "Migrate my local data" (upsert-merge, PRD §10.6). One sample-export test. Can be dropped if the founder confirms nothing beyond seed. **→ deferred to alongside HT11.**
+  - ↳ note: `gen-seed-source` bug fixed (was stopping at the first `)` of `seedData()`). `array[…]::text[]` chosen over `'{…}'` literals — per-element `''` escaping is trivial and the seed has many apostrophes/em-dashes.
 
 ---
 
@@ -254,7 +255,7 @@ Companion docs: [PRD.md](PRD.md), [AUDIT.md](AUDIT.md). Refs like "PRD §16 S-3"
 - [ ] **Cloudflare Pages**: connect repo, build `npm run build` → `dist/`, `VITE_*` = prod project, `_headers`/`_redirects` committed, PR preview deploys.
 - [ ] **Prod Supabase (free)**: apply migrations + `seed.sql`; Auth redirect URLs = prod + preview origins; Resend SMTP; insert the bootstrap invite.
 - [ ] `.github/workflows/keepalive.yml` — every 3 days: `curl -fsS -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" https://<ref>.supabase.co/rest/v1/`.
-- [ ] `.github/workflows/backup.yml` — **weekly**: `supabase db dump --linked` (with `SUPABASE_ACCESS_TOKEN` secret) **or** `pg_dump` v15+ against the **Supavisor session pooler** string (`…pooler.supabase.com:5432`, user `postgres.<ref>`) — **not** the direct `db.<ref>.supabase.co` host (IPv6-only on free; GH runners have no IPv6). `| gzip` → **Cloudflare R2** (`R2_*` secrets; GH artifact fallback), keep last ~12. **Test one restore** into a fresh local project.
+- [ ] `.github/workflows/backup.yml` — **weekly**: `supabase db dump --linked` (with `SUPABASE_ACCESS_TOKEN` secret) **or** `pg_dump` (match server major — PG 17 now) against the **Supavisor session pooler** string (`…pooler.supabase.com:5432`, user `postgres.<ref>`) — **not** the direct `db.<ref>.supabase.co` host (IPv6-only on free; GH runners have no IPv6). `| gzip` → **Cloudflare R2** (`R2_*` secrets; GH artifact fallback), keep last ~12. **Test one restore** into a fresh local project.
 - [ ] Retire the old **Claude Artifact** app (replace with a redirect notice); announce the new URL. Decide on `assets/` (logos) — the app inlines the logo as a data-URI, so `assets/` is likely unused; keep for reference or drop.
 - [ ] Extension: `esbuild` prod build → zip; document "Load unpacked" from `chrome-extension/dist`; distribute.
 - [ ] Rewrite `README.md` + `chrome-extension/README.md`; delete stale "local storage / no sync / curated not live / open the Artifact" language.
