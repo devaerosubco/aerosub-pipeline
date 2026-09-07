@@ -13,7 +13,7 @@ Companion docs: [PRD.md](PRD.md), [AUDIT.md](AUDIT.md). Refs like "PRD §16 S-3"
 | 1 — Audit (`AUDIT.md`) | ✅ |
 | 2 — PRD (`PRD.md`) | ✅ (re-scoped down after the "not over-engineered?" review — 18 tables, no realtime) |
 | 3 — Heavy Tasks (`TASKS.md`) | ✅ + build-readiness pass done (2026-09-04) |
-| 4 — Execute | 🟢 **HT0–HT11 done (HT0-5: 2026-09-04; HT6-11: 2026-09-07). Every feature view is Supabase-backed.** Next: HT12 (Chrome Extension Rewire). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
+| 4 — Execute | 🟢 **HT0–HT12 done (HT0-5: 2026-09-04; HT6-12: 2026-09-07).** Next: HT13 (Security & RLS Review). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
 | 5 — Final report | pending |
 
 Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema + seed; `npm run db:check` = 41/41 structural; `npm run test:rls` = anon fully denied; `npm run test:invite` = 25/25 invite/signup matrix; `npm run check:secrets` = clean; `npm run smoke` = real-browser sign-in + dashboard render (now against real Supabase-sourced companies/news, not the localStorage seed); `npx vitest run` = 30/30 (store.js mapping + validate.js).
@@ -218,14 +218,17 @@ Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema
 
 **Acceptance criteria:** Extension user **signs in** (email + password only); "Save to Research" writes a `research_clips` row directly; offline/signed-out clips queue and sync later; `.json`/Copy-JSON fallback kept; bundle has anon key only; MV3.
 
-- [ ] `esbuild` build → `chrome-extension/dist/` with supabase-js inlined, `VITE_*` `define`d from `.env`.
-- [ ] `manifest.json`: MV3; keep `activeTab`/`scripting`/`storage`/`downloads`/`clipboardWrite`; add `host_permissions` for the Supabase origin; add `content_security_policy.extension_pages`.
-- [ ] `chrome.storage.local` storage adapter → `createClient({ auth: { storage, detectSessionInUrl: false }})`.
-- [ ] Popup "Account" panel: email+password **sign in** / sign out / current user. No signup.
-- [ ] "Save to Research": `validate` → `insert({id: crypto.randomUUID(), …, created_by})` → on failure enqueue; "Saved" tab shows *pending* only + "Sync now"; flush on open + on sign-in.
-- [ ] Keep Export .json / Copy JSON.
-- [ ] Tests: online save → appears in app Research on Refresh; offline → queued → syncs; bundle grep → anon key only.
-  - ↳ note:
+- [x] Build → `chrome-extension/dist/` with supabase-js inlined + the public config baked in from `.env`. Used **Vite lib mode** (`chrome-extension/build.mjs`) instead of esbuild — esbuild isn't installed (Vite 8 ships rolldown) and Vite is already here, so no new dep. `npm run ext:build`. `dist/` is gitignored.
+- [x] `dist/manifest.json` generated from a template: MV3, kept all 5 permissions, `host_permissions` = the Supabase origin from `.env` (`http://127.0.0.1:54321/*` locally — HT15 rebuilds it against prod), `content_security_policy.extension_pages: "script-src 'self'; object-src 'self'"`.
+- [x] `chrome.storage.local` storage adapter → `createClient({ auth: { storage, persistSession: true, autoRefreshToken: true, detectSessionInUrl: false }})` (a popup's own window storage is wiped on close, so the session has to live in `chrome.storage.local`).
+- [x] New **Account** tab: signed-out shows email+password + "Sign in" (Enter submits); signed-in shows "Signed in as …" + "Sign out". No signup ("get an invite from a teammate").
+- [x] "Save to Research": `isValidClip` (title required) → signed in + online → `insert([clipToRow(clip, uid)])` straight into `research_clips` (client `id`, `created_by`, URL normalised). Signed out / insert fails → enqueued in `chrome.storage.local`. The **Queue** tab (renamed from "Saved") shows only unsynced clips + a **"Sync now"** button; flush runs on popup open and right after a successful sign-in.
+- [x] Export .json / Copy JSON kept on the Queue tab as the break-glass path; copy re-labelled "the queue is a fallback".
+- [x] `chrome-extension/clips.js` — the pure data logic (`normalizeUrl`, `clipToRow`, `isValidClip`, `flushQueue`), so it's unit-testable: **7 Vitest tests** (`chrome-extension/**/*.test.js` added to the vitest glob).
+- [x] `chrome-extension/README.md` rewritten — dropped all the "nothing talks to a server / stored locally until you export" language; added the build step + sign-in flow.
+- [x] Tests (`npm run test:ext`, 23/23): **`scripts/ext-save-test.mjs`** (12) — a signed-out client is denied inserting `research_clips` (so the popup must queue); a signed-in member inserts one with the anon key + session, attributed via `created_by`, URL normalised; `flushQueue` uploads a 2-clip queue and clears it; a member reading `research_clips` (what the app does) sees the extension's clips; the built bundle's only JWT is `role:anon`, the service_role key string isn't in it, manifest is MV3 with the right `host_permissions` + CSP. **`scripts/ext-popup-test.mjs`** (11) — renders the built `popup.html` with a stubbed `chrome.*`: 3 tabs, the Account sign-in form, capture-form prefill (title + scheme-less URL), title-required validation, and a save-while-signed-out landing in the Queue with the "sign in to sync" hint, zero page errors.
+  - ↳ note: no full MV3 Playwright harness (headed-only, flaky on Windows) — but the two tests above cover the data path end-to-end against local Supabase + the popup wiring. A real `chrome://extensions` → Load unpacked is a one-line manual step in HT14's QA.
+  - ↳ note: `scripts/demo-user.mjs` (new, unrelated to HT12) — a local-dev helper that creates a confirmed member so you can `npm run dev` and sign in without the invite dance. Refuses to run against a non-local `SUPABASE_URL`.
 
 ---
 

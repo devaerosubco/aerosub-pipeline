@@ -58,7 +58,8 @@
   </div>
   <div class="tabs">
     <button class="tab active" data-tab="capture">Capture</button>
-    <button class="tab" data-tab="saved">Saved <span id="savedCount"></span></button>
+    <button class="tab" data-tab="saved">Queue <span id="savedCount"></span></button>
+    <button class="tab" data-tab="account">Account</button>
   </div>
 
   <div class="panel active" id="panel-capture">
@@ -83,15 +84,35 @@
 
   <div class="panel" id="panel-saved">
     <div class="count-row">
-      <span class="n"><span id="savedCount2">0</span> clip(s) waiting to be imported</span>
+      <span class="n"><span id="savedCount2">0</span> clip(s) queued (not yet in Research)</span>
     </div>
+    <button class="btn" id="syncNowBtn" style="display:none;">Sync now</button>
+    <div class="status" id="syncHint" style="display:none;">Sign in on the Account tab to sync these.</div>
     <div class="clip-list" id="clipList"></div>
     <div class="footer-actions">
       <button class="btn ghost small" id="copyBtn" style="flex:1;">Copy JSON</button>
       <button class="btn small" id="exportBtn" style="flex:1;">Export .json</button>
     </div>
-    <div class="status" id="status2">Import the exported file from the Research tab in the Aerosub Pipeline app (“Import clips”).</div>
-    <button class="btn ghost small" id="clearBtn" style="width:100%;margin-top:8px;">Clear all saved clips</button>
+    <div class="status" id="status2">The queue is a fallback — clips save straight to Research when you're signed in. Export/Import is break-glass only.</div>
+    <button class="btn ghost small" id="clearBtn" style="width:100%;margin-top:8px;">Clear the queue</button>
+  </div>
+
+  <div class="panel" id="panel-account">
+    <div id="acctSignedOut" style="display:none;">
+      <label>Email</label>
+      <input id="acctEmailInput" type="email" placeholder="you@aerosub.co" autocomplete="username">
+      <label>Password</label>
+      <input id="acctPasswordInput" type="password" autocomplete="current-password">
+      <button class="btn" id="signInBtn">Sign in</button>
+      <div class="status" id="acctStatus"></div>
+      <div class="status">Same account as the Aerosub Pipeline app. Get an invite from a teammate if you don't have one — you can't sign up here.</div>
+    </div>
+    <div id="acctSignedIn" style="display:none;">
+      <label>Signed in as</label>
+      <div style="font-weight:700;padding:4px 0;" id="acctEmail"></div>
+      <button class="btn ghost" id="signOutBtn">Sign out</button>
+      <div class="status">Clips you save now go straight into the Research tab, attributed to you.</div>
+    </div>
   </div>
 
   <script src="popup.js"></script>
