@@ -9,7 +9,8 @@ import * as store from './store.js';
 import * as companiesApi from './api/companies.js';
 import * as newsApi from './api/news.js';
 import * as contactsApi from './api/contacts.js';
-import { emailRule, normalizeLinkedin, validateChanged } from './validate.js';
+import * as competitorsApi from './api/competitors.js';
+import { emailRule, normalizeLinkedin, normalizeUrlish, validateChanged } from './validate.js';
 
 /* ============================================================
    ICONS (tiny inline SVGs)
@@ -1780,6 +1781,14 @@ function renderCompetitorDrawer(){
     </div>
     <div class="drawer-body">
       <div class="dsec">
+        <div class="dsec-head"><h4>Profile</h4></div>
+        <div class="add-inline"><input id="coName" value="${esc(co.name)}" placeholder="Competitor name"></div>
+        <div class="add-inline"><input id="coHq" value="${esc(co.hq)}" placeholder="HQ / region"></div>
+        <div class="add-inline"><input id="coWebsite" value="${esc(co.website||'')}" placeholder="Website — e.g. example.com"></div>
+        <div class="small-btn-row"><button class="btn btn-sm btn-primary" id="saveIdentityBtn">Save details</button></div>
+      </div>
+
+      <div class="dsec">
         <div class="dsec-head"><h4>Notes</h4></div>
         <textarea class="notes-area" id="notesArea">${esc(co.notes||'')}</textarea>
         <div class="small-btn-row"><button class="btn btn-sm btn-primary" id="saveNotesBtn">Save notes</button></div>
@@ -1841,37 +1850,77 @@ function renderCompetitorDrawer(){
 }
 function bindCompetitorDrawer(co){
   document.getElementById('drawerCloseBtn').addEventListener('click', closeDrawer);
-  document.getElementById('modalitySelect').addEventListener('change', e=>{ co.modality=e.target.value; persist(); renderView(); });
-  document.getElementById('threatSelect').addEventListener('change', e=>{ co.threat=e.target.value; persist(); renderCompetitorDrawer(); renderView(); });
+  document.getElementById('modalitySelect').addEventListener('change', async e=>{
+    const modality = e.target.value;
+    try{ await competitorsApi.setModality(co.id, modality); co.modality = modality; }
+    catch(err){ toast('Could not save — ' + (err.message || 'try again')); }
+    renderCompetitorDrawer(); renderView();
+  });
+  document.getElementById('threatSelect').addEventListener('change', async e=>{
+    const threat = e.target.value;
+    try{ await competitorsApi.setThreat(co.id, threat); co.threat = threat; }
+    catch(err){ toast('Could not save — ' + (err.message || 'try again')); }
+    renderCompetitorDrawer(); renderView();
+  });
   document.getElementById('deleteCompetitorBtn').addEventListener('click', ()=>{
-    openConfirmModal(`Remove ${co.name} and its logged campaigns?`, ()=>{
-      DATA.competitors = DATA.competitors.filter(x=>x.id!==co.id);
-      persist(); closeDrawer(); renderApp();
-      toast('Competitor removed');
+    openConfirmModal(`Remove ${co.name} and its logged campaigns?`, async ()=>{
+      try{
+        await competitorsApi.remove(co.id);
+        DATA.competitors = DATA.competitors.filter(x=>x.id!==co.id);
+        closeDrawer(); renderApp();
+        toast('Competitor removed');
+      }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
     });
   });
-  document.getElementById('saveNotesBtn').addEventListener('click', ()=>{
-    co.notes = document.getElementById('notesArea').value; persist(); toast('Notes saved');
+
+  document.getElementById('saveIdentityBtn').addEventListener('click', async ()=>{
+    const name = document.getElementById('coName').value.trim();
+    if (!name){ toast('Name required'); return; }
+    const hq = document.getElementById('coHq').value.trim();
+    const website = normalizeUrlish(document.getElementById('coWebsite').value);
+    try{
+      await competitorsApi.editIdentity(co.id, {name, hq, website});
+      co.name = name; co.hq = hq; co.website = website;
+      toast('Details saved'); renderApp(); openCompetitorDrawer(co.id);
+    }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
   });
-  document.querySelectorAll('[data-del-campaign]').forEach(b=>b.addEventListener('click', ()=>{
-    co.campaigns = co.campaigns.filter(x=>x.id!==b.dataset.delCampaign); persist(); renderCompetitorDrawer(); renderView();
+
+  document.getElementById('saveNotesBtn').addEventListener('click', async ()=>{
+    const notes = document.getElementById('notesArea').value;
+    try{ await competitorsApi.setNotes(co.id, notes); co.notes = notes; toast('Notes saved'); }
+    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+  });
+
+  document.querySelectorAll('[data-del-campaign]').forEach(b=>b.addEventListener('click', async ()=>{
+    try{
+      await competitorsApi.removeCampaign(b.dataset.delCampaign);
+      co.campaigns = co.campaigns.filter(x=>x.id!==b.dataset.delCampaign);
+      renderCompetitorDrawer(); renderView();
+    }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
   }));
-  document.getElementById('addCampaignBtn').addEventListener('click', ()=>{
+
+  document.getElementById('addCampaignBtn').addEventListener('click', async ()=>{
     const title = document.getElementById('cpTitle').value.trim();
     if (!title){ toast('Title required'); return; }
-    co.campaigns.push({
-      id: co.id+'-cp'+Date.now(), title,
+    const campaign = {
+      title,
       type: document.getElementById('cpType').value,
       date: document.getElementById('cpDate').value || new Date().toISOString().slice(0,10),
       relevance: document.getElementById('cpRelevance').value,
-      sourceUrl: document.getElementById('cpSource').value.trim(),
+      sourceUrl: normalizeUrlish(document.getElementById('cpSource').value),
       summary: document.getElementById('cpSummary').value.trim(),
       performance: document.getElementById('cpPerformance').value.trim(),
       gap: document.getElementById('cpGap').value.trim(),
       sweetSpot: document.getElementById('cpSweetSpot').value.trim(),
       verdict: document.getElementById('cpVerdict').value,
-    });
-    persist(); logActivity('Logged a competitor campaign', `${co.name} — ${title}`); renderCompetitorDrawer(); renderView(); toast('Campaign logged');
+    };
+    const addBtn = document.getElementById('addCampaignBtn'); addBtn.disabled = true;
+    try{
+      const saved = await competitorsApi.createCampaign(co.id, campaign);
+      co.campaigns.push(saved);
+      logActivity('Logged a competitor campaign', `${co.name} — ${title}`);
+      renderCompetitorDrawer(); renderView(); toast('Campaign logged');
+    }catch(e){ toast('Could not log campaign — ' + (e.message || 'try again')); addBtn.disabled = false; }
   });
 }
 
@@ -1890,17 +1939,20 @@ function openAddCompetitorModal(){
     </div>
   `, body=>{
     body.querySelector('#mCancel').onclick = closeModal;
-    body.querySelector('#mSave').onclick = ()=>{
+    body.querySelector('#mSave').onclick = async ()=>{
       const name = body.querySelector('#mName').value.trim();
       if (!name){ toast('Name required'); return; }
-      const id = name.toLowerCase().replace(/[^a-z0-9]+/g,'-') + '-' + Math.random().toString(36).slice(2,5);
-      DATA.competitors.push({
-        id, name, hq: body.querySelector('#mHq').value.trim()||'Unknown',
+      const competitor = {
+        id: crypto.randomUUID(), name, hq: body.querySelector('#mHq').value.trim()||'Unknown',
         modality: body.querySelector('#mModality').value, threat: body.querySelector('#mThreat').value,
-        website: body.querySelector('#mWebsite').value.trim(), notes: body.querySelector('#mNotes').value.trim(),
-        campaigns:[]
-      });
-      persist(); closeModal(); renderApp(); toast('Competitor added');
+        website: normalizeUrlish(body.querySelector('#mWebsite').value), notes: body.querySelector('#mNotes').value.trim(),
+      };
+      const save = body.querySelector('#mSave'); save.disabled = true;
+      try{
+        const saved = await competitorsApi.create(competitor);
+        DATA.competitors.push(saved);
+        closeModal(); renderApp(); toast('Competitor added');
+      }catch(e){ toast('Could not add competitor — ' + (e.message || 'try again')); save.disabled = false; }
     };
   });
 }

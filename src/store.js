@@ -54,9 +54,23 @@ export function competitorFromRow(row) {
 export function campaignFromRow(row) {
   return {
     id: row.id, competitorId: row.competitor_id, title: row.title, type: row.type || '',
-    date: row.date || '', url: row.source_url || '', relevance: row.relevance || '',
+    date: row.date || '', sourceUrl: row.source_url || '', relevance: row.relevance || '',
     summary: row.summary || '', performance: row.performance || '', gap: row.gap || '',
     sweetSpot: row.sweet_spot || '', verdict: row.verdict,
+  };
+}
+export function campaignToRow(cp) {
+  return {
+    title: cp.title, type: cp.type || null, date: cp.date || null,
+    source_url: cp.sourceUrl || null, relevance: cp.relevance || null,
+    summary: cp.summary || null, performance: cp.performance || null,
+    gap: cp.gap || null, sweet_spot: cp.sweetSpot || null, verdict: cp.verdict || 'watch',
+  };
+}
+export function competitorToRow(co) {
+  return {
+    name: co.name, hq: co.hq || null, website: co.website || null,
+    notes: co.notes || null, modality: co.modality, threat: co.threat,
   };
 }
 export function newsFromRow(row) {

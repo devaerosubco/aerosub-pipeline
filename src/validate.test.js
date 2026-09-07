@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { emailRule, normalizeLinkedin, validateChanged } from './validate.js';
+import { emailRule, normalizeLinkedin, normalizeUrlish, validateChanged } from './validate.js';
 
 describe('emailRule', () => {
   it('accepts empty (not public)', () => { expect(emailRule('')).toBeNull(); });
@@ -15,6 +15,17 @@ describe('normalizeLinkedin', () => {
     expect(normalizeLinkedin('linkedin.com/in/jane')).toBe('linkedin.com/in/jane');
   });
   it('empty stays empty', () => { expect(normalizeLinkedin('')).toBe(''); });
+});
+
+describe('normalizeUrlish', () => {
+  it('is the same function normalizeLinkedin aliases, usable for any scheme-less field', () => {
+    expect(normalizeUrlish('https://www.example.com/page')).toBe('example.com/page');
+    expect(normalizeUrlish).toBe(normalizeLinkedin);
+  });
+  it('strips a lone trailing slash on a bare domain but keeps a real path intact', () => {
+    expect(normalizeUrlish('https://www.thecyberhawk.com/')).toBe('thecyberhawk.com');
+    expect(normalizeUrlish('linkedin.com/in/jane/')).toBe('linkedin.com/in/jane/');
+  });
 });
 
 describe('validateChanged', () => {

@@ -15,15 +15,20 @@ export function emailRule(v) {
   return EMAIL_RE.test(s) ? null : 'That doesn’t look like a valid email address.';
 }
 
-// LinkedIn is always stored scheme-less (PRD §6.6) — strip any http(s):// /
-// www. prefix the user pastes in. Never rejects; there's no format to
-// enforce beyond "looks like a path", so this only normalises.
-export function normalizeLinkedin(v) {
+// Strips a leading http(s):// and www. — every "domain/path, no scheme"
+// field in this app is stored this way: contacts.linkedin (PRD §6.6),
+// competitors.website, events.website, competitor_campaigns.source_url.
+// Never rejects; there's no format to enforce beyond "looks like a path",
+// so this only normalises.
+export function normalizeUrlish(v) {
   let s = String(v || '').trim();
   if (!s) return '';
   s = s.replace(/^https?:\/\//i, '').replace(/^www\./i, '');
+  if (s.endsWith('/') && s.indexOf('/') === s.length - 1) s = s.slice(0, -1); // bare domain, trailing slash only
   return s;
 }
+// Kept as a named alias — reads better at contact-editing call sites.
+export const normalizeLinkedin = normalizeUrlish;
 
 // Compares `after` against `before` key-by-key and only runs the matching
 // rule (from `rules`, keyed the same way) on keys whose value actually

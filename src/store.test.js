@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   companyFromRow, companyToRow, flagFromRow, contactFromRow, contactToRow, recommendedFromRow,
-  productFromRow, taskFromRow, competitorFromRow, campaignFromRow,
+  productFromRow, taskFromRow, competitorFromRow, competitorToRow, campaignFromRow, campaignToRow,
   newsFromRow, newsToRow, researchFromRow, eventFromRow, attendeeFromRow,
   connectorFromRow, activityFromRow,
 } from './store.js';
@@ -81,15 +81,32 @@ describe('tasks', () => {
 });
 
 describe('competitors + campaigns', () => {
-  it('maps campaign field names, including sweet_spot -> sweetSpot and source_url -> url', () => {
+  it('maps campaign field names, including sweet_spot -> sweetSpot and source_url -> sourceUrl', () => {
     const cp = campaignFromRow({
       id: 'c1', competitor_id: 'co1', title: 'A campaign', type: 'Current', date: '2026-01-01',
       source_url: 'https://example.com', relevance: 'Direct overlap', summary: 's', performance: 'p',
       gap: 'g', sweet_spot: 'ss', verdict: 'compete',
     });
-    expect(cp.url).toBe('https://example.com');
+    expect(cp.sourceUrl).toBe('https://example.com');
     expect(cp.sweetSpot).toBe('ss');
     expect(cp.verdict).toBe('compete');
+  });
+
+  it('round-trips a campaign through campaignToRow -> campaignFromRow (regression: sourceUrl, not url)', () => {
+    const app = { title: 'A campaign', type: 'Current', date: '2026-01-01', sourceUrl: 'https://example.com', relevance: 'Watch', summary: 's', performance: 'p', gap: 'g', sweetSpot: 'ss', verdict: 'watch' };
+    const row = campaignToRow(app);
+    expect(row.source_url).toBe(app.sourceUrl);
+    expect(row.sweet_spot).toBe(app.sweetSpot);
+    const back = campaignFromRow({ id: 'c2', competitor_id: 'co1', ...row });
+    expect(back.sourceUrl).toBe(app.sourceUrl);
+  });
+
+  it('round-trips a competitor through competitorToRow -> competitorFromRow', () => {
+    const app = { name: 'Rival', hq: 'Lagos', website: 'rival.com', notes: 'n', modality: 'Drone', threat: 'Direct' };
+    const row = competitorToRow(app);
+    const back = competitorFromRow({ id: 'co2', ...row });
+    expect(back.name).toBe(app.name);
+    expect(back.website).toBe(app.website);
   });
 
   it('maps a competitor row', () => {

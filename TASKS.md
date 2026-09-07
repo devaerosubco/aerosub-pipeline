@@ -13,10 +13,10 @@ Companion docs: [PRD.md](PRD.md), [AUDIT.md](AUDIT.md). Refs like "PRD §16 S-3"
 | 1 — Audit (`AUDIT.md`) | ✅ |
 | 2 — PRD (`PRD.md`) | ✅ (re-scoped down after the "not over-engineered?" review — 18 tables, no realtime) |
 | 3 — Heavy Tasks (`TASKS.md`) | ✅ + build-readiness pass done (2026-09-04) |
-| 4 — Execute | 🟢 **HT0 + HT1 + HT3 + HT2 + HT4 + HT5 done (2026-09-04).** Next: HT6 (Competition). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
+| 4 — Execute | 🟢 **HT0–HT6 done (HT0/1/2/3/4/5: 2026-09-04; HT6: 2026-09-07).** Next: HT7 (Research + extension import). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
 | 5 — Final report | pending |
 
-Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema + seed; `npm run db:check` = 41/41 structural; `npm run test:rls` = anon fully denied; `npm run test:invite` = 25/25 invite/signup matrix; `npm run check:secrets` = clean; `npm run smoke` = real-browser sign-in + dashboard render (now against real Supabase-sourced companies/news, not the localStorage seed); `npx vitest run` = 26/26 (store.js mapping + validate.js).
+Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema + seed; `npm run db:check` = 41/41 structural; `npm run test:rls` = anon fully denied; `npm run test:invite` = 25/25 invite/signup matrix; `npm run check:secrets` = clean; `npm run smoke` = real-browser sign-in + dashboard render (now against real Supabase-sourced companies/news, not the localStorage seed); `npx vitest run` = 30/30 (store.js mapping + validate.js).
 
 **What's needed, and when:**
 - **Now** — HT0. Needs Node + npm (present).
@@ -137,11 +137,13 @@ Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema
 
 **Acceptance criteria:** 10 competitors, modality/threat filters, add competitor, **name/hq/website edit (E-1)**, campaign CRUD (all fields incl. verdict), competitor notes — against Supabase.
 
-- [ ] `src/api/competitors.js` — competitor `create`/`update`/`editIdentity`/`remove`; campaign `create`/`update`/`remove`.
-- [ ] Rewire `renderCompetitors`/`bindCompetitorsControls`/`renderCompetitorDrawer`/`bindCompetitorDrawer`/`openAddCompetitorModal`/`allCampaigns`/`competitorById` (+ inline identity edit).
-- [ ] Enum validation; `source_url`/`website` normalised.
-- [ ] Regression: Competition checklist.
-  - ↳ note:
+- [x] `src/api/competitors.js` — competitor `create`/`editIdentity` (E-1: name/hq/website)/`setModality`/`setThreat`/`setNotes`/`remove`; campaign `createCampaign`/`removeCampaign` on `competitor_campaigns`.
+  - ↳ note: granular setters instead of a bare `update` (same style as `api/companies.js`). No campaign `update` — the drawer never had an edit-campaign UI, only add + delete, so there's nothing to wire.
+- [x] Rewire `renderCompetitorDrawer` (added an E-1 "Profile" identity section — name/hq/website + "Save details", same pattern as companies/events) + `bindCompetitorDrawer` (modality/threat/notes/delete + campaign add/delete) + `openAddCompetitorModal` onto the real API.
+  - ↳ note: `renderCompetitors`/`bindCompetitorsControls`/`allCampaigns`/`competitorById` needed **no changes** — pure reads on the Supabase-shaped `DATA` from HT4.
+- [x] Enum values (`modality`/`threat`/campaign `type`/`verdict`) are DB-CHECK-enforced and the UI only offers valid `<option>`s, so no extra client check was needed. `source_url`/`website` normalised via a new `normalizeUrlish()` in `src/validate.js` (strips scheme + `www.` + a lone trailing slash; keeps real paths intact) — `normalizeLinkedin` is now an alias of it.
+  - ↳ **bug found + fixed (from HT4):** `campaignFromRow` in store.js mapped `source_url` → **`url`**, but every actual usage in main.js (and the seed) reads **`sourceUrl`** — so the Competition drawer's "Source ↗" links had been silently blank since HT4. Fixed + added `campaignToRow`/`competitorToRow` + 4 round-trip tests (one explicitly named as the regression guard). The old store.test.js assertion that "passed" was itself checking the wrong field name.
+- [x] Regression: Competition checklist — verified in a real browser (14/14, script deleted after use): the source-link regression, E-1 edit + website normalisation, threat/modality/notes changes, campaign log (all fields incl. verdict) + delete, add a new competitor, and edits surviving a full page reload. Plus `npx vitest run` 30/30, `db:check` 41/41, `test:rls` 20/20, `test:invite` 25/25, `smoke` 7/7, `check:secrets` clean.
 
 ---
 
