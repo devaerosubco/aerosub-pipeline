@@ -13,7 +13,7 @@ Companion docs: [PRD.md](PRD.md), [AUDIT.md](AUDIT.md). Refs like "PRD §16 S-3"
 | 1 — Audit (`AUDIT.md`) | ✅ |
 | 2 — PRD (`PRD.md`) | ✅ (re-scoped down after the "not over-engineered?" review — 18 tables, no realtime) |
 | 3 — Heavy Tasks (`TASKS.md`) | ✅ + build-readiness pass done (2026-09-04) |
-| 4 — Execute | 🟢 **HT0–HT7 done (HT0-5: 2026-09-04; HT6-7: 2026-09-07).** Next: HT8 (Plan). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
+| 4 — Execute | 🟢 **HT0–HT8 done (HT0-5: 2026-09-04; HT6-8: 2026-09-07).** Next: HT9 (Products & Offers). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
 | 5 — Final report | pending |
 
 Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema + seed; `npm run db:check` = 41/41 structural; `npm run test:rls` = anon fully denied; `npm run test:invite` = 25/25 invite/signup matrix; `npm run check:secrets` = clean; `npm run smoke` = real-browser sign-in + dashboard render (now against real Supabase-sourced companies/news, not the localStorage seed); `npx vitest run` = 30/30 (store.js mapping + validate.js).
@@ -165,11 +165,10 @@ Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema
 
 **Acceptance criteria:** Task groups (overdue/week/later/done), toggle, delete, add (general or per-company), per-company tasks in the company drawer — persist to `tasks`; dashboard counts correct; deleting a company deletes its tasks; general tasks (`company_id IS NULL`) survive.
 
-- [ ] `src/api/tasks.js` — `create` (client id), `update`, `toggleDone`, `remove`.
-- [ ] Rewire `renderTasks`/`bindTasksControls`/`taskCard`/`openAddTaskModal` + company-drawer task section. General task = `company_id: null`.
-- [ ] Enum `priority`; date `due`.
-- [ ] Regression: Plan checklist + dashboard overdue/due-soon; delete a company → its tasks gone, a general task untouched.
-  - ↳ note:
+- [x] `src/api/tasks.js` — `create` (client id), `update`, `toggleDone`, `remove`. `toRow` maps `companyId` → `company_id` (`''`/falsy → `null` for a general task).
+- [x] Rewire `openAddTaskModal` + `bindTasksControls` (Plan-view toggle/delete) + `bindDrawer`'s task section (`[data-toggle-task]` / `[data-del-task]` / `addTaskInline`) onto the real API. `renderTasks`/`taskCard` unchanged (pure reads).
+- [x] Enum `priority` — DB-CHECK-enforced + UI only offers valid options. `due` is a nullable `date`, passed through as-is.
+- [x] Regression: Plan checklist — real-browser pass (11/11, script deleted after use): add a general task (`company_id NULL`) + a per-company task from the drawer (prefilled to the drawer's company), priority + due persisted, toggle-done from **both** the drawer and the Plan view, delete from the Plan view, deleting a company **cascades its tasks in the DB** while a general task is untouched, and the survivor task surviving a full page reload. Dashboard overdue/due-soon tiles recompute from `DATA.tasks` (unchanged code). Plus vitest 30/30, db:check 41/41, rls-test 20/20, test:invite 25/25, smoke 7/7, check:secrets clean.
 
 ---
 

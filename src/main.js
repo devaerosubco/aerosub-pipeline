@@ -11,6 +11,7 @@ import * as newsApi from './api/news.js';
 import * as contactsApi from './api/contacts.js';
 import * as competitorsApi from './api/competitors.js';
 import * as researchApi from './api/research.js';
+import * as tasksApi from './api/tasks.js';
 import { emailRule, normalizeLinkedin, normalizeUrlish, validateChanged } from './validate.js';
 
 /* ============================================================
@@ -1518,12 +1519,20 @@ function bindDrawer(c){
     }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
   }));
 
-  document.querySelectorAll('[data-toggle-task]').forEach(b=>b.addEventListener('change', ()=>{
+  document.querySelectorAll('[data-toggle-task]').forEach(b=>b.addEventListener('change', async ()=>{
     const t = DATA.tasks.find(x=>x.id===b.dataset.toggleTask);
-    if (t){ t.done = b.checked; persist(); renderApp(); openDrawer(c.id); }
+    if (!t) return;
+    try{ await tasksApi.toggleDone(t.id, b.checked); t.done = b.checked; }
+    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+    renderApp(); openDrawer(c.id);
   }));
-  document.querySelectorAll('[data-del-task]').forEach(b=>b.addEventListener('click', ()=>{
-    DATA.tasks = DATA.tasks.filter(t=>t.id!==b.dataset.delTask); persist(); renderApp(); openDrawer(c.id);
+  document.querySelectorAll('[data-del-task]').forEach(b=>b.addEventListener('click', async ()=>{
+    const id = b.dataset.delTask;
+    try{
+      await tasksApi.remove(id);
+      DATA.tasks = DATA.tasks.filter(t=>t.id!==id);
+      renderApp(); openDrawer(c.id);
+    }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
   }));
   document.getElementById('addTaskInline').addEventListener('click', ()=>openAddTaskModal(c.id));
 
@@ -3214,12 +3223,17 @@ function taskCard(t){
   `;
 }
 function bindTasksControls(){
-  document.querySelectorAll('[data-toggle-task-g]').forEach(b=>b.addEventListener('change', ()=>{
+  document.querySelectorAll('[data-toggle-task-g]').forEach(b=>b.addEventListener('change', async ()=>{
     const t = DATA.tasks.find(x=>x.id===b.dataset.toggleTaskG);
-    if (t){ t.done=b.checked; persist(); renderApp(); }
+    if (!t) return;
+    try{ await tasksApi.toggleDone(t.id, b.checked); t.done = b.checked; }
+    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+    renderApp();
   }));
-  document.querySelectorAll('[data-del-task-g]').forEach(b=>b.addEventListener('click', ()=>{
-    DATA.tasks = DATA.tasks.filter(t=>t.id!==b.dataset.delTaskG); persist(); renderApp();
+  document.querySelectorAll('[data-del-task-g]').forEach(b=>b.addEventListener('click', async ()=>{
+    const id = b.dataset.delTaskG;
+    try{ await tasksApi.remove(id); DATA.tasks = DATA.tasks.filter(t=>t.id!==id); renderApp(); }
+    catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
   }));
   document.querySelectorAll('[data-open-company]').forEach(el=>{
     el.addEventListener('click', (e)=>{ e.stopPropagation(); openDrawer(el.dataset.openCompany); });
@@ -3494,16 +3508,21 @@ function openAddTaskModal(companyId){
     </div>
   `, body=>{
     body.querySelector('#mCancel').onclick = closeModal;
-    body.querySelector('#mSave').onclick = ()=>{
+    body.querySelector('#mSave').onclick = async ()=>{
       const title = body.querySelector('#mTitle').value.trim();
       if (!title){ toast('Title required'); return; }
-      DATA.tasks.push({
-        id:'t'+Date.now(), title, companyId: body.querySelector('#mCo').value,
-        due: body.querySelector('#mDue').value, priority: body.querySelector('#mPriority').value, done:false
-      });
-      persist(); closeModal(); renderApp();
-      if (ui.drawerCompanyId) openDrawer(ui.drawerCompanyId);
-      toast('Action added');
+      const task = {
+        id: crypto.randomUUID(), title, companyId: body.querySelector('#mCo').value,
+        due: body.querySelector('#mDue').value, priority: body.querySelector('#mPriority').value, done:false,
+      };
+      const save = body.querySelector('#mSave'); save.disabled = true;
+      try{
+        const saved = await tasksApi.create(task);
+        DATA.tasks.push(saved);
+        closeModal(); renderApp();
+        if (ui.drawerCompanyId) openDrawer(ui.drawerCompanyId);
+        toast('Action added');
+      }catch(e){ toast('Could not add — ' + (e.message || 'try again')); save.disabled = false; }
     };
   });
 }
