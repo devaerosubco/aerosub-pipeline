@@ -178,13 +178,29 @@ async function fetchAppSettings() {
   return { lastNewsRefresh: rows[0]?.last_news_refresh || '' };
 }
 
+// Research clips are bounded (PRD §16 S-2). loadAll() pulls the newest page;
+// the Research view's "Load older clips" button calls loadMoreResearch()
+// with the oldest capturedAt it already has.
+export const RESEARCH_PAGE = 200;
+async function fetchResearchPage(before) {
+  let q = supabase.from('research_clips').select('*').order('captured_at', { ascending: false }).limit(RESEARCH_PAGE);
+  if (before) q = q.lt('captured_at', before);
+  const { data, error } = await q;
+  if (error) throw error;
+  return (data || []).map(researchFromRow);
+}
+export async function loadMoreResearch(before) {
+  const page = await fetchResearchPage(before);
+  return { clips: page, end: page.length < RESEARCH_PAGE };
+}
+
 /* ============================================================
    loadAll() — the full boot load (PRD §9: "on boot, load every table")
    ============================================================ */
 
 export async function loadAll() {
   const [
-    companies, tasks, productRows, competitors, news, researchRows,
+    companies, tasks, productRows, competitors, news, research,
     events, connectorRows, activityRows, appSettings,
   ] = await Promise.all([
     fetchCompanies(),
@@ -192,7 +208,7 @@ export async function loadAll() {
     sel('products', '*'),
     (async () => assembleCompetitors(await sel('competitors', '*'), await sel('competitor_campaigns', '*')))(),
     fetchNews(),
-    sel('research_clips', '*', { order: { col: 'captured_at', asc: false }, limit: 200 }),
+    fetchResearchPage(null),
     (async () => assembleEvents(await sel('events', '*'), await sel('event_attendees', '*')))(),
     sel('connectors', '*'),
     sel('activity_log', '*', { order: { col: 'created_at', asc: false }, limit: 100 }),
@@ -205,7 +221,7 @@ export async function loadAll() {
     solutions: productRows.map(productFromRow),
     competitors,
     news,
-    research: researchRows.map(researchFromRow),
+    research,
     events,
     activityLog: activityRows.map(activityFromRow),
     settings: {

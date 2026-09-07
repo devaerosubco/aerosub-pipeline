@@ -10,6 +10,7 @@ import * as companiesApi from './api/companies.js';
 import * as newsApi from './api/news.js';
 import * as contactsApi from './api/contacts.js';
 import * as competitorsApi from './api/competitors.js';
+import * as researchApi from './api/research.js';
 import { emailRule, normalizeLinkedin, normalizeUrlish, validateChanged } from './validate.js';
 
 /* ============================================================
@@ -649,6 +650,10 @@ const AUTH = {
 // Team data for the Settings view (profiles + invites), fetched on demand.
 const SETTINGS = { profiles: [], invites: [], loaded: false, loading: false };
 
+// Research clips are loaded newest-page-first (PRD §16 S-2). `researchEnd`
+// goes true once a "Load older" page comes back short — hides the button.
+let researchEnd = false;
+
 // Populated by enterApp() -> store.loadAll() once signed in with a profile.
 // null while the auth screen or the post-sign-in loading state is showing.
 let DATA = null;
@@ -850,6 +855,7 @@ async function doRefreshAll(){
   if (btn) btn.disabled = true;
   try{
     DATA = await store.loadAll();
+    researchEnd = false;
     renderApp();
     toast('Refreshed');
   }catch(e){
@@ -2010,16 +2016,40 @@ function renderResearch(){
       }).join('')}
       ${rows.length===0?`<div class="empty">${ICONS.empty}<div>No clips saved yet.</div></div>`:''}
     </div>
+    ${(!researchEnd && DATA.research.length >= store.RESEARCH_PAGE) ? `
+      <div style="text-align:center;margin-top:14px;">
+        <button class="btn btn-ghost" id="loadMoreResearchBtn">Load older clips</button>
+      </div>` : ''}
   `;
 }
 function bindResearchControls(){
-  document.querySelectorAll('[data-del-research]').forEach(b=>b.addEventListener('click', ()=>{
-    DATA.research = DATA.research.filter(x=>x.id!==b.dataset.delResearch); persist(); renderView(); toast('Clip removed');
+  document.querySelectorAll('[data-del-research]').forEach(b=>b.addEventListener('click', async ()=>{
+    const id = b.dataset.delResearch;
+    try{
+      await researchApi.remove(id);
+      DATA.research = DATA.research.filter(x=>x.id!==id);
+      renderView(); toast('Clip removed');
+    }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
   }));
-  document.querySelectorAll('[data-link-company]').forEach(sel=>sel.addEventListener('change', e=>{
+  document.querySelectorAll('[data-link-company]').forEach(sel=>sel.addEventListener('change', async e=>{
     const r = DATA.research.find(x=>x.id===sel.dataset.linkCompany);
-    if (r){ r.companyId = e.target.value; persist(); renderView(); }
+    if (!r) return;
+    const companyId = e.target.value;
+    try{ await researchApi.linkCompany(r.id, companyId); r.companyId = companyId; renderView(); }
+    catch(err){ toast('Could not link — ' + (err.message || 'try again')); renderView(); }
   }));
+  const loadMoreBtn = document.getElementById('loadMoreResearchBtn');
+  if (loadMoreBtn) loadMoreBtn.addEventListener('click', async ()=>{
+    loadMoreBtn.disabled = true;
+    const oldest = DATA.research.reduce((m, r) => (!m || (r.capturedAt || '') < m) ? (r.capturedAt || '') : m, '');
+    try{
+      const { clips, end } = await store.loadMoreResearch(oldest);
+      const have = new Set(DATA.research.map(r => r.id));
+      DATA.research.push(...clips.filter(c => !have.has(c.id)));
+      researchEnd = end;
+      renderView();
+    }catch(e){ toast('Could not load more — ' + (e.message || 'try again')); loadMoreBtn.disabled = false; }
+  });
   document.querySelectorAll('[data-promote-contact]').forEach(b=>b.addEventListener('click', async ()=>{
     const r = DATA.research.find(x=>x.id===b.dataset.promoteContact);
     const co = r && companyById(r.companyId);
@@ -2055,47 +2085,55 @@ function openAddResearchModal(){
     </div>
   `, body=>{
     body.querySelector('#mCancel').onclick = closeModal;
-    body.querySelector('#mSave').onclick = ()=>{
+    body.querySelector('#mSave').onclick = async ()=>{
       const title = body.querySelector('#mTitle').value.trim();
       if (!title){ toast('Title required'); return; }
-      DATA.research.push({
-        id:'r'+Date.now(), title, url: body.querySelector('#mUrl').value.trim(),
+      const email = body.querySelector('#mCEmail').value.trim();
+      const { ok, errors } = validateChanged({contactEmail:''}, {contactEmail: email}, {contactEmail: emailRule});
+      if (!ok){ toast(errors.contactEmail); return; }
+      const clip = {
+        title, url: normalizeUrlish(body.querySelector('#mUrl').value),
         capturedAt: new Date().toISOString(),
         summary: body.querySelector('#mSummary').value.trim(), potential: body.querySelector('#mPotential').value.trim(),
-        contactName: body.querySelector('#mCName').value.trim(), contactEmail: body.querySelector('#mCEmail').value.trim(),
-        contactPhone: body.querySelector('#mCPhone').value.trim(), contactLinkedin: body.querySelector('#mCLinkedin').value.trim(),
+        contactName: body.querySelector('#mCName').value.trim(), contactEmail: email,
+        contactPhone: body.querySelector('#mCPhone').value.trim(), contactLinkedin: normalizeUrlish(body.querySelector('#mCLinkedin').value),
         companyId: body.querySelector('#mCo').value,
-      });
-      persist(); closeModal(); renderApp(); toast('Clip saved');
+      };
+      const save = body.querySelector('#mSave'); save.disabled = true;
+      try{
+        const saved = await researchApi.create(clip, AUTH.profile && AUTH.profile.id);
+        DATA.research.unshift(saved);
+        closeModal(); renderApp(); toast('Clip saved');
+      }catch(e){ toast('Could not save — ' + (e.message || 'try again')); save.disabled = false; }
     };
   });
 }
 function doImportResearch(e){
   const file = e.target.files[0];
   if (!file) return;
+  const input = e.target;
   const reader = new FileReader();
-  reader.onload = () => {
+  reader.onload = async () => {
+    let clips;
     try{
       const parsed = JSON.parse(reader.result);
-      const clips = Array.isArray(parsed) ? parsed : Array.isArray(parsed.clips) ? parsed.clips : null;
+      clips = Array.isArray(parsed) ? parsed : Array.isArray(parsed.clips) ? parsed.clips : null;
       if (!clips) throw new Error('bad shape');
-      let n = 0;
-      clips.forEach(c=>{
-        if (!c || !c.title) return;
-        DATA.research.push({
-          id:'r'+Date.now()+'-'+n, title:c.title, url:c.url||'', capturedAt:c.capturedAt||new Date().toISOString(),
-          summary:c.summary||'', potential:c.potential||'',
-          contactName:c.contactName||'', contactEmail:c.contactEmail||'', contactPhone:c.contactPhone||'', contactLinkedin:c.contactLinkedin||'',
-          companyId:''
-        });
-        n++;
-      });
-      persist(); renderApp();
-      toast(n ? `Imported ${n} clip${n===1?'':'s'}` : 'No valid clips found in that file');
-    }catch(err){ toast('Could not read that file — expecting clips exported from the Aerosub Research extension'); }
+    }catch(err){
+      toast('Could not read that file — expecting clips exported from the Aerosub Research extension');
+      input.value = ''; return;
+    }
+    try{
+      const saved = await researchApi.importClips(clips, AUTH.profile && AUTH.profile.id);
+      const have = new Set(DATA.research.map(r => r.id));
+      DATA.research.unshift(...saved.filter(c => !have.has(c.id)));
+      DATA.research.sort((a,b)=>(b.capturedAt||'').localeCompare(a.capturedAt||''));
+      renderApp();
+      toast(saved.length ? `Imported ${saved.length} clip${saved.length===1?'':'s'}` : 'No valid clips found in that file');
+    }catch(err){ toast('Could not import — ' + (err.message || 'try again')); }
+    input.value = '';
   };
   reader.readAsText(file);
-  e.target.value = '';
 }
 
 /* ============================================================
@@ -3035,6 +3073,7 @@ async function loadDataAndRender(){
   renderLoadingScreen();
   try{
     DATA = await store.loadAll();
+    researchEnd = false;
     renderApp();
   }catch(e){
     renderLoadingScreen({ error: e.message || 'Could not load your data.' });

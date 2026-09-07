@@ -13,7 +13,7 @@ Companion docs: [PRD.md](PRD.md), [AUDIT.md](AUDIT.md). Refs like "PRD §16 S-3"
 | 1 — Audit (`AUDIT.md`) | ✅ |
 | 2 — PRD (`PRD.md`) | ✅ (re-scoped down after the "not over-engineered?" review — 18 tables, no realtime) |
 | 3 — Heavy Tasks (`TASKS.md`) | ✅ + build-readiness pass done (2026-09-04) |
-| 4 — Execute | 🟢 **HT0–HT6 done (HT0/1/2/3/4/5: 2026-09-04; HT6: 2026-09-07).** Next: HT7 (Research + extension import). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
+| 4 — Execute | 🟢 **HT0–HT7 done (HT0-5: 2026-09-04; HT6-7: 2026-09-07).** Next: HT8 (Plan). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
 | 5 — Final report | pending |
 
 Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema + seed; `npm run db:check` = 41/41 structural; `npm run test:rls` = anon fully denied; `npm run test:invite` = 25/25 invite/signup matrix; `npm run check:secrets` = clean; `npm run smoke` = real-browser sign-in + dashboard render (now against real Supabase-sourced companies/news, not the localStorage seed); `npx vitest run` = 30/30 (store.js mapping + validate.js).
@@ -151,11 +151,13 @@ Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema
 
 **Acceptance criteria:** Manual add, link-to-account, promote-contact, delete against `research_clips`; "Import clips" (extension JSON) writes rows; recent-200 + "load more".
 
-- [ ] `src/api/research.js` — `create` (client id), `update`, `remove`, `linkCompany`, `importClips(array)` (validate + bulk insert, `created_by`).
-- [ ] Rewire `renderResearch`/`bindResearchControls`/`openAddResearchModal`/`doImportResearch`/`filteredResearch`; "load more".
-- [ ] `validate.js` `url`/`contact_email`/`contact_linkedin` (normalise, changed-only).
-- [ ] Regression: Research checklist; import a real extension export file.
-  - ↳ note:
+- [x] `src/api/research.js` — `create` (client id, `created_by`), `update`, `remove`, `linkCompany`, `importClips(array, createdBy)` (bulk insert, skips titleless entries).
+  - ↳ **bug found + fixed (via the browser test):** `importClips` passed `{ row: rows, many: true }` as the *payload*, but `many` belongs in `write()`'s 4th arg (opts). Result was a `.single()` on a multi-row insert → 406. Fixed to `write(..., { row: rows }, { many: true })`.
+- [x] Rewire `openAddResearchModal` (+ inline email/url/linkedin validation), `bindResearchControls` (delete / link-to-account / promote-contact) and `doImportResearch` onto the real API. `renderResearch`/`filteredResearch` unchanged except the new "Load older clips" button.
+- [x] **"Load older clips"** — `store.js` gained `RESEARCH_PAGE = 200` + `fetchResearchPage(before)` + `loadMoreResearch(before)` (keyset by `captured_at`). `loadAll()` now uses that page; the button shows when `DATA.research.length >= 200 && !researchEnd` and pages back until a short page comes home. `researchEnd` resets on boot + Refresh.
+- [x] `validate.js` — `openAddResearchModal` normalises `url`/`contactLinkedin` via `normalizeUrlish` and validates `contactEmail` via `emailRule` (changed-fields-only pattern, `''` baseline for a fresh clip). `api/research.js`'s `toRow`/`update` also normalise on write.
+- [x] Regression: Research checklist — real-browser pass (12/12, script deleted after use): manual add with an **invalid contact email rejected client-side** (no row), URL normalisation, `created_by` set to the member, link-to-account, promote-contact, an **extension-format `{type,version,clips}` JSON import** (2 valid + 1 titleless skipped), delete, and imported clips **surviving a full page reload**. Plus vitest 30/30, db:check 41/41, rls-test 20/20, test:invite 25/25, smoke 7/7, check:secrets clean.
+  - ↳ note: the Chrome extension itself is untouched — HT12 rewrites it to write to Supabase directly. HT7 only makes the app-side "Import clips" button persist. The extension's file/clipboard export stays as the break-glass path (PRD §11.4).
 
 ---
 
