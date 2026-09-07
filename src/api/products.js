@@ -1,0 +1,36 @@
+// Products & Offers — Aerosub's own catalog (PRD §6.7).
+// The company<->product tag join (company_products) lives in
+// api/companies.js (tagProduct/untagProduct) — same table, bidirectional
+// (PRD §6.8), wired in HT4. The product drawer calls those directly.
+import { write } from '../api.js';
+import { productToRow, productFromRow } from '../store.js';
+
+export async function create(product) {
+  const row = { id: product.id || crypto.randomUUID(), ...productToRow(product) };
+  const saved = await write('products', 'insert', { row });
+  return productFromRow(saved);
+}
+
+// name/tag — E-1.
+export async function editIdentity(id, { name, tag }) {
+  const row = {};
+  if (name !== undefined) row.name = name;
+  if (tag !== undefined) row.tag = tag || null;
+  await write('products', 'update', { row, match: { id } });
+}
+
+export async function setKind(id, kind) {
+  await write('products', 'update', { row: { kind }, match: { id } });
+}
+export async function setStatus(id, status) {
+  await write('products', 'update', { row: { status }, match: { id } });
+}
+export async function setBlurb(id, blurb) {
+  await write('products', 'update', { row: { blurb: blurb || null }, match: { id } });
+}
+export async function setHighlights(id, highlights) {
+  await write('products', 'update', { row: { highlights }, match: { id } });
+}
+export async function remove(id) {
+  await write('products', 'delete', { match: { id } }); // company_products cascade in the DB
+}

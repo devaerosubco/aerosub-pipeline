@@ -13,7 +13,7 @@ Companion docs: [PRD.md](PRD.md), [AUDIT.md](AUDIT.md). Refs like "PRD §16 S-3"
 | 1 — Audit (`AUDIT.md`) | ✅ |
 | 2 — PRD (`PRD.md`) | ✅ (re-scoped down after the "not over-engineered?" review — 18 tables, no realtime) |
 | 3 — Heavy Tasks (`TASKS.md`) | ✅ + build-readiness pass done (2026-09-04) |
-| 4 — Execute | 🟢 **HT0–HT8 done (HT0-5: 2026-09-04; HT6-8: 2026-09-07).** Next: HT9 (Products & Offers). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
+| 4 — Execute | 🟢 **HT0–HT9 done (HT0-5: 2026-09-04; HT6-9: 2026-09-07).** Next: HT10 (Reports & Exports). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
 | 5 — Final report | pending |
 
 Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema + seed; `npm run db:check` = 41/41 structural; `npm run test:rls` = anon fully denied; `npm run test:invite` = 25/25 invite/signup matrix; `npm run check:secrets` = clean; `npm run smoke` = real-browser sign-in + dashboard render (now against real Supabase-sourced companies/news, not the localStorage seed); `npx vitest run` = 30/30 (store.js mapping + validate.js).
@@ -176,11 +176,12 @@ Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema
 
 **Acceptance criteria:** 6 products, **name/tag edit (E-1)**, kind/status/blurb, highlights (`text[]`), tag/untag from the product side, **re-tag updates rationale (E-2)**, delete (removes all `company_products`).
 
-- [ ] `src/api/products.js` — `update`/`editIdentity`/`remove`; `highlights` whole-array update; `tag(companyId, why)` = `upsert on conflict (company_id, product_id) do update set rationale` (E-2); `untag(companyId)`.
-- [ ] Rewire `renderSolutions`/`bindSolutionsControls`/`renderProductDrawer`/`bindProductDrawer`/`openAddSolutionModal`/`solutionById`/`taggedCompaniesFor`/`untaggedCompaniesFor` (+ inline name/tag edit).
-- [ ] Delete product → cascade `company_products` → refetch.
-- [ ] Regression: Products checklist, both tagging directions, re-tag updates reason.
-  - ↳ note:
+- [x] `src/api/products.js` — `create`/`editIdentity` (E-1: name/tag)/`setKind`/`setStatus`/`setBlurb`/`setHighlights` (whole `text[]` array)/`remove`. `store.js` gained `productToRow` (+ 2 round-trip tests).
+  - ↳ note: `tag`/`untag` are **not** in `products.js` — they're `companiesApi.tagProduct`/`untagProduct` (same `company_products` table, bidirectional per PRD §6.8), built + tested in HT4 and already called by the product drawer's tag/untag buttons. Adding duplicate wrappers would just be noise.
+- [x] Rewire `renderProductDrawer` (added an E-1 "Identity" section — name/tag + "Save details") + `bindProductDrawer` (status/kind/blurb/highlights/delete) + `openAddSolutionModal` onto the real API. `renderSolutions`/`bindSolutionsControls`/`solutionById`/`taggedCompaniesFor`/`untaggedCompaniesFor` needed **no changes** (pure reads).
+  - ↳ note: `openAddSolutionModal`'s "tag to a client at creation" now works for real — it `productsApi.create()`s the product first (real Supabase id), *then* `companiesApi.tagProduct()`s it. Before HT9 this path was local-only because a brand-new client-slug product had no matching `products` row for the FK.
+- [x] Delete product → `productsApi.remove()` → the DB cascades `company_products` (FK); the client also patches `DATA.companies[].recommended` + `DATA.solutions` locally.
+- [x] Regression: Products checklist — real-browser pass (12/12, script deleted after use): E-1 name/tag edit, kind/status/blurb, highlight add + remove (`text[]` whole-array), tag from the product side, **E-2 re-tag → rationale updated, no duplicate row**, add a new product **+ tag-at-creation**, delete a product **cascading its `company_products` rows**, and edits surviving a full page reload. Plus vitest 32/32, db:check 41/41, rls-test 20/20, test:invite 25/25, smoke 7/7, check:secrets clean.
 
 ---
 

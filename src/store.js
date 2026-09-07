@@ -124,6 +124,12 @@ export function contactToRow(ct) {
     last_contact: ct.lastContact || null, next_follow_up: ct.nextFollowUp || null,
   };
 }
+export function productToRow(p) {
+  return {
+    name: p.name, tag: p.tag || null, kind: p.kind || 'Product',
+    status: p.status || 'Active', blurb: p.blurb || null, highlights: p.highlights || [],
+  };
+}
 
 /* ============================================================
    assembling nested shapes

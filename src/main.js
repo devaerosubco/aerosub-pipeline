@@ -12,6 +12,7 @@ import * as contactsApi from './api/contacts.js';
 import * as competitorsApi from './api/competitors.js';
 import * as researchApi from './api/research.js';
 import * as tasksApi from './api/tasks.js';
+import * as productsApi from './api/products.js';
 import { emailRule, normalizeLinkedin, normalizeUrlish, validateChanged } from './validate.js';
 
 /* ============================================================
@@ -1589,6 +1590,13 @@ function renderProductDrawer(){
     </div>
     <div class="drawer-body">
       <div class="dsec">
+        <div class="dsec-head"><h4>Identity</h4></div>
+        <div class="add-inline"><input id="pName" value="${esc(p.name)}" placeholder="Product / offer name"></div>
+        <div class="add-inline"><input id="pTag" value="${esc(p.tag||'')}" placeholder="Category / tag — e.g. Aerial"></div>
+        <div class="small-btn-row"><button class="btn btn-sm btn-primary" id="saveIdentityBtn">Save details</button></div>
+      </div>
+
+      <div class="dsec">
         <div class="dsec-head"><h4>Description</h4></div>
         <textarea class="notes-area" id="blurbArea">${esc(p.blurb||'')}</textarea>
         <div class="small-btn-row"><button class="btn btn-sm btn-primary" id="saveBlurbBtn">Save description</button></div>
@@ -1629,27 +1637,59 @@ function renderProductDrawer(){
 
 function bindProductDrawer(p){
   document.getElementById('drawerCloseBtn').addEventListener('click', closeDrawer);
-  document.getElementById('statusSelect').addEventListener('change', e=>{ p.status=e.target.value; persist(); renderProductDrawer(); renderView(); });
-  document.getElementById('kindSelect').addEventListener('change', e=>{ p.kind=e.target.value; persist(); renderProductDrawer(); renderView(); });
+  document.getElementById('statusSelect').addEventListener('change', async e=>{
+    const status = e.target.value;
+    try{ await productsApi.setStatus(p.id, status); p.status = status; }
+    catch(err){ toast('Could not save — ' + (err.message || 'try again')); }
+    renderProductDrawer(); renderView();
+  });
+  document.getElementById('kindSelect').addEventListener('change', async e=>{
+    const kind = e.target.value;
+    try{ await productsApi.setKind(p.id, kind); p.kind = kind; }
+    catch(err){ toast('Could not save — ' + (err.message || 'try again')); }
+    renderProductDrawer(); renderView();
+  });
+  document.getElementById('saveIdentityBtn').addEventListener('click', async ()=>{
+    const name = document.getElementById('pName').value.trim();
+    if (!name){ toast('Name required'); return; }
+    const tag = document.getElementById('pTag').value.trim();
+    try{
+      await productsApi.editIdentity(p.id, {name, tag});
+      p.name = name; p.tag = tag;
+      toast('Details saved'); renderApp(); openProductDrawer(p.id);
+    }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+  });
   document.getElementById('deleteProductBtn').addEventListener('click', ()=>{
-    openConfirmModal(`Remove ${p.name}? It will also be untagged from every account.`, ()=>{
-      DATA.companies.forEach(c=>{ c.recommended = c.recommended.filter(r=>r.sol!==p.id); });
-      DATA.solutions = DATA.solutions.filter(x=>x.id!==p.id);
-      persist(); closeDrawer(); renderApp();
-      toast('Product removed');
+    openConfirmModal(`Remove ${p.name}? It will also be untagged from every account.`, async ()=>{
+      try{
+        await productsApi.remove(p.id);
+        DATA.companies.forEach(c=>{ c.recommended = c.recommended.filter(r=>r.sol!==p.id); });
+        DATA.solutions = DATA.solutions.filter(x=>x.id!==p.id);
+        closeDrawer(); renderApp();
+        toast('Product removed');
+      }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
     });
   });
 
-  document.getElementById('saveBlurbBtn').addEventListener('click', ()=>{
-    p.blurb = document.getElementById('blurbArea').value; persist(); toast('Description saved'); renderView();
+  document.getElementById('saveBlurbBtn').addEventListener('click', async ()=>{
+    const blurb = document.getElementById('blurbArea').value;
+    try{ await productsApi.setBlurb(p.id, blurb); p.blurb = blurb; toast('Description saved'); renderView(); }
+    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
   });
 
   if (!p.highlights) p.highlights = [];
-  document.getElementById('addHlBtn').addEventListener('click', ()=>{
+  document.getElementById('addHlBtn').addEventListener('click', async ()=>{
     const inp = document.getElementById('newHl');
-    if (inp.value.trim()){ p.highlights.push(inp.value.trim()); persist(); renderProductDrawer(); }
+    if (!inp.value.trim()) return;
+    const next = [...p.highlights, inp.value.trim()];
+    try{ await productsApi.setHighlights(p.id, next); p.highlights = next; renderProductDrawer(); }
+    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
   });
-  document.querySelectorAll('[data-del-hl]').forEach(b=>b.addEventListener('click', ()=>{ p.highlights.splice(+b.dataset.delHl,1); persist(); renderProductDrawer(); }));
+  document.querySelectorAll('[data-del-hl]').forEach(b=>b.addEventListener('click', async ()=>{
+    const next = p.highlights.filter((_,i)=>i!==+b.dataset.delHl);
+    try{ await productsApi.setHighlights(p.id, next); p.highlights = next; renderProductDrawer(); }
+    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+  }));
 
   document.querySelectorAll('[data-open-company]').forEach(el=>el.addEventListener('click', ()=>openDrawer(el.dataset.openCompany)));
   document.querySelectorAll('[data-untag]').forEach(b=>b.addEventListener('click', async ()=>{
@@ -3543,18 +3583,29 @@ function openAddSolutionModal(){
     </div>
   `, body=>{
     body.querySelector('#mCancel').onclick = closeModal;
-    body.querySelector('#mSave').onclick = ()=>{
+    body.querySelector('#mSave').onclick = async ()=>{
       const name = body.querySelector('#mName').value.trim();
       if (!name){ toast('Name required'); return; }
-      const id = name.toLowerCase().replace(/[^a-z0-9]+/g,'-') + '-' + Math.random().toString(36).slice(2,5);
-      DATA.solutions.push({
-        id, name, tag: body.querySelector('#mTag').value.trim()||'General',
+      const product = {
+        id: crypto.randomUUID(), name, tag: body.querySelector('#mTag').value.trim()||'General',
         kind: body.querySelector('#mKind').value, status: body.querySelector('#mStatus').value,
-        blurb: body.querySelector('#mBlurb').value.trim(), highlights:[]
-      });
+        blurb: body.querySelector('#mBlurb').value.trim(), highlights:[],
+      };
       const coId = body.querySelector('#mCo').value;
-      if (coId){ const co = companyById(coId); if (co) co.recommended.push({sol:id, why:'Tagged at creation'}); }
-      persist(); closeModal(); renderApp(); toast('Product added');
+      const save = body.querySelector('#mSave'); save.disabled = true;
+      try{
+        const saved = await productsApi.create(product);
+        DATA.solutions.push(saved);
+        if (coId){
+          const co = companyById(coId);
+          if (co){
+            await companiesApi.tagProduct(co.id, saved.id, 'Tagged at creation');
+            co.recommended = co.recommended.filter(r=>r.sol!==saved.id);
+            co.recommended.push({sol: saved.id, why: 'Tagged at creation'});
+          }
+        }
+        closeModal(); renderApp(); toast('Product added');
+      }catch(e){ toast('Could not add — ' + (e.message || 'try again')); save.disabled = false; }
     };
   });
 }

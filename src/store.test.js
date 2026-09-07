@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   companyFromRow, companyToRow, flagFromRow, contactFromRow, contactToRow, recommendedFromRow,
-  productFromRow, taskFromRow, competitorFromRow, competitorToRow, campaignFromRow, campaignToRow,
+  productFromRow, productToRow, taskFromRow, competitorFromRow, competitorToRow, campaignFromRow, campaignToRow,
   newsFromRow, newsToRow, researchFromRow, eventFromRow, attendeeFromRow,
   connectorFromRow, activityFromRow,
 } from './store.js';
@@ -70,6 +70,21 @@ describe('products', () => {
   it('maps highlights text[] 1:1', () => {
     const p = productFromRow({ id: 'drone', name: 'Drone', tag: 'Aerial', kind: 'Product', status: 'Active', blurb: '', highlights: ['a', 'b'] });
     expect(p.highlights).toEqual(['a', 'b']);
+  });
+  it('round-trips through productToRow -> productFromRow', () => {
+    const app = { name: 'Flare Survey', tag: 'Aerial', kind: 'Offer', status: 'Pilot', blurb: 'b', highlights: ['h1', 'h2'] };
+    const row = productToRow(app);
+    expect(row.highlights).toEqual(app.highlights);
+    const back = productFromRow({ id: 'x', ...row });
+    expect(back.kind).toBe('Offer');
+    expect(back.status).toBe('Pilot');
+    expect(back.highlights).toEqual(app.highlights);
+  });
+  it('productToRow defaults kind/status when missing', () => {
+    const row = productToRow({ name: 'X' });
+    expect(row.kind).toBe('Product');
+    expect(row.status).toBe('Active');
+    expect(row.highlights).toEqual([]);
   });
 });
 
