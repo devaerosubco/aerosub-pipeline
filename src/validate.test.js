@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { emailRule, normalizeLinkedin, normalizeUrlish, validateChanged } from './validate.js';
+import { emailRule, normalizeLinkedin, normalizeUrlish, urlRule, dateRule, validateChanged } from './validate.js';
 
 describe('emailRule', () => {
   it('accepts empty (not public)', () => { expect(emailRule('')).toBeNull(); });
@@ -25,6 +25,29 @@ describe('normalizeUrlish', () => {
   it('strips a lone trailing slash on a bare domain but keeps a real path intact', () => {
     expect(normalizeUrlish('https://www.thecyberhawk.com/')).toBe('thecyberhawk.com');
     expect(normalizeUrlish('linkedin.com/in/jane/')).toBe('linkedin.com/in/jane/');
+  });
+});
+
+describe('urlRule', () => {
+  it('accepts empty, a bare domain, and a path', () => {
+    expect(urlRule('')).toBeNull();
+    expect(urlRule('https://www.example.com')).toBeNull();
+    expect(urlRule('linkedin.com/in/jane')).toBeNull();
+  });
+  it('rejects whitespace and non-domain junk', () => {
+    expect(urlRule('not a url')).not.toBeNull();
+    expect(urlRule('hello')).not.toBeNull();
+  });
+});
+
+describe('dateRule', () => {
+  it('accepts empty and a real ISO date', () => {
+    expect(dateRule('')).toBeNull();
+    expect(dateRule('2026-09-30')).toBeNull();
+  });
+  it('rejects a bad shape or an impossible date', () => {
+    expect(dateRule('30/09/2026')).not.toBeNull();
+    expect(dateRule('2026-13-40')).not.toBeNull();
   });
 });
 

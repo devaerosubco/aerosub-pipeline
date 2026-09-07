@@ -8,7 +8,10 @@
 set -u
 cd "$(dirname "$0")/.."
 
-files=$( { git ls-files; [ -d dist ] && find dist -type f; } | sort -u )
+files=$( { git ls-files; \
+          [ -d dist ] && find dist -type f; \
+          [ -d chrome-extension/dist ] && find chrome-extension/dist -type f; \
+        } | sort -u )
 fail=0
 
 emit() { echo "FAIL ($1):"; echo "$2"; fail=1; }

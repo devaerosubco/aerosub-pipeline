@@ -1,7 +1,7 @@
 "use strict";
 import {
   getSession, onAuthChange, signIn, signUpWithInvite, signOut,
-  resetPassword, updatePassword, myProfile, updateMyProfile, listProfiles,
+  resetPassword, updatePassword, myProfile, updateMyProfile, listProfiles, amIMember,
   SIGNUP_FAILED_MESSAGE,
 } from './auth.js';
 import * as invitesApi from './api/invites.js';
@@ -15,7 +15,7 @@ import * as tasksApi from './api/tasks.js';
 import * as productsApi from './api/products.js';
 import * as activityApi from './api/activity.js';
 import * as connectorsApi from './api/connectors.js';
-import { emailRule, normalizeLinkedin, normalizeUrlish, validateChanged } from './validate.js';
+import { emailRule, normalizeLinkedin, normalizeUrlish, urlRule, dateRule, validateChanged } from './validate.js';
 
 /* ============================================================
    ICONS (tiny inline SVGs)
@@ -696,6 +696,22 @@ function daysUntil(iso){
 function esc(s){
   return String(s==null?'':s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
+// `html` tagged template — every ${interpolation} is esc()'d automatically
+// unless it's wrapped in safe() (for known-good markup: ICONS, nested html``
+// results, arrays of html`` results). Use it for any NEW innerHTML string so
+// a missing esc() is impossible. (PRD §8.3.3 — the existing renders were
+// audited to already esc() every user value; see scripts/xss-test.mjs.)
+function safe(s){ return { __html: Array.isArray(s) ? s.map(x => (x && x.__html) || esc(x)).join('') : String(s) }; }
+function html(strings, ...values){
+  return safe(strings.reduce((out, str, i) => {
+    if (i === 0) return str;
+    const v = values[i - 1];
+    const piece = v && v.__html !== undefined ? v.__html
+      : Array.isArray(v) ? v.map(x => (x && x.__html !== undefined) ? x.__html : esc(x)).join('')
+      : esc(v);
+    return out + piece + str;
+  }, '')).__html;
+}
 function stripProto(url){
   let s = String(url==null?'':url).trim();
   if (s.indexOf('http://')===0) s = s.slice(7);
@@ -860,6 +876,7 @@ async function doRefreshAll(){
   const btn = document.getElementById('refreshAllBtn');
   if (btn) btn.disabled = true;
   try{
+    if (!(await guardMembership())) return;   // bounced to no-profile screen
     DATA = await store.loadAll();
     researchEnd = false; activityEnd = false;
     renderApp();
@@ -3108,6 +3125,24 @@ async function loadDataAndRender(){
     renderLoadingScreen({ error: e.message || 'Could not load your data.' });
   }
 }
+
+// Re-checks membership when something suggests the session may no longer be
+// a member (a write denied by RLS, or the tab regaining focus after being
+// left open). A profile-less session otherwise reads as a silently-empty
+// app; here it's bounced to the "ask for a new invite" screen instead.
+let guardInFlight = false;
+async function guardMembership(){
+  if (AUTH.mode !== 'app' || guardInFlight) return true;
+  guardInFlight = true;
+  let member;
+  try{ member = await amIMember(); }
+  finally{ guardInFlight = false; }
+  if (member !== false) return true;   // true = member, null = couldn't check
+  AUTH.profile = null;
+  DATA = null;
+  setAuthMode('no-profile');
+  return false;
+}
 function renderLoadingScreen({ error } = {}){
   document.getElementById('app').innerHTML = `
     <div class="gate-wrap"><div class="gate-card">
@@ -3126,6 +3161,9 @@ async function boot(){
   const params = new URLSearchParams(location.search);
   AUTH.inviteToken = params.get('invite') || null;
   AUTH.pinnedEmail = params.get('email') || '';
+
+  window.addEventListener('aerosub:rls-denied', () => { guardMembership(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) guardMembership(); });
 
   onAuthChange(async (event, session)=>{
     AUTH.session = session || null;
@@ -3464,8 +3502,8 @@ function openEditContactModal(contactId){
         linkedin: normalizeLinkedin(body.querySelector('#mLi').value),
         nextFollowUp: body.querySelector('#mFollow').value,
       };
-      const { ok, errors } = validateChanged(ct, patch, { email: emailRule });
-      if (!ok){ toast(errors.email); return; }
+      const { ok, errors } = validateChanged(ct, patch, { email: emailRule, linkedin: urlRule, nextFollowUp: dateRule });
+      if (!ok){ toast(errors.email || errors.linkedin || errors.nextFollowUp); return; }
       const save = body.querySelector('#mSave'); save.disabled = true;
       try{
         const saved = await contactsApi.update(ct.id, patch);

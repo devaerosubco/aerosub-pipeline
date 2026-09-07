@@ -1,0 +1,3 @@
+# SPA fallback — any path serves index.html (the app is a single page; the
+# invite token is a ?query and the auth tokens are a #hash, both on "/").
+/*  /index.html  200

@@ -1,0 +1,15 @@
+# Cloudflare Pages security headers (PRD §8.6). Applied to the deployed
+# site only — the local `npm run dev` server ignores this file.
+#
+# connect-src is `https://*.supabase.co` so no per-project edit is needed;
+# HT15 may pin it to the exact `https://<ref>.supabase.co` for that deploy.
+# No wss:// — there's no realtime (PRD §9).
+
+/*
+  Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  Cross-Origin-Opener-Policy: same-origin
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://*.supabase.co; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'

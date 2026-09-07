@@ -30,6 +30,29 @@ export function normalizeUrlish(v) {
 // Kept as a named alias — reads better at contact-editing call sites.
 export const normalizeLinkedin = normalizeUrlish;
 
+// A link field, checked AFTER normalizeUrlish. Empty is fine. Rejects only
+// clearly-broken input (whitespace, or nothing that looks like a domain or
+// a path) — deliberately permissive, since the seed carries masked / bare
+// values and every member is trusted (AUDIT §5.8, no DB format CHECK).
+export function urlRule(v) {
+  const s = normalizeUrlish(v);
+  if (s === '') return null;
+  if (/\s/.test(s)) return 'That doesn’t look like a valid link.';
+  if (!/[./]/.test(s)) return 'That doesn’t look like a valid link — include a domain.';
+  return null;
+}
+
+// An ISO date string (YYYY-MM-DD) or empty. The date <input>s already
+// enforce this, so this is a backstop for pasted / imported values.
+export function dateRule(v) {
+  const s = String(v || '').trim();
+  if (s === '') return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || Number.isNaN(Date.parse(s + 'T00:00:00Z'))) {
+    return 'Use a date like 2026-09-30.';
+  }
+  return null;
+}
+
 // Compares `after` against `before` key-by-key and only runs the matching
 // rule (from `rules`, keyed the same way) on keys whose value actually
 // changed. Returns { ok, errors: {field: message} }.

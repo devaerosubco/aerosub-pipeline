@@ -80,6 +80,23 @@ export async function myProfile() {
   return data || null;
 }
 
+// Cheap "am I still a member?" check — calls the same is_member() function
+// every RLS policy uses (exposed as an RPC). Used to catch a session whose
+// profile has been removed (offboarded, or a local DB reset) instead of
+// showing a silently-empty app. Returns true / false, or null when the
+// check itself couldn't run (network) — the caller must not sign anyone
+// out on null. A profile-less `authenticated` session gets a clean false
+// (it can execute the function; it just returns false).
+export async function amIMember() {
+  const { data, error } = await supabase.rpc('is_member');
+  if (error) {
+    // "permission denied for function" == not authenticated at all -> false.
+    if (/permission denied/i.test(error.message || '')) return false;
+    return null;
+  }
+  return data === true;
+}
+
 export async function updateMyProfile({ fullName, department }) {
   const { data: s } = await supabase.auth.getSession();
   const uid = s?.session?.user?.id;
