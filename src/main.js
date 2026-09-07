@@ -13,6 +13,8 @@ import * as competitorsApi from './api/competitors.js';
 import * as researchApi from './api/research.js';
 import * as tasksApi from './api/tasks.js';
 import * as productsApi from './api/products.js';
+import * as activityApi from './api/activity.js';
+import * as connectorsApi from './api/connectors.js';
 import { emailRule, normalizeLinkedin, normalizeUrlish, validateChanged } from './validate.js';
 
 /* ============================================================
@@ -652,9 +654,11 @@ const AUTH = {
 // Team data for the Settings view (profiles + invites), fetched on demand.
 const SETTINGS = { profiles: [], invites: [], loaded: false, loading: false };
 
-// Research clips are loaded newest-page-first (PRD §16 S-2). `researchEnd`
-// goes true once a "Load older" page comes back short — hides the button.
+// Research clips + the activity log are loaded newest-page-first (PRD §16
+// S-2/S-12). The *End flags go true once a "Load older" page comes back
+// short — hides the button. Both reset on boot + Refresh.
 let researchEnd = false;
+let activityEnd = false;
 
 // Populated by enterApp() -> store.loadAll() once signed in with a profile.
 // null while the auth screen or the post-sign-in loading state is showing.
@@ -857,7 +861,7 @@ async function doRefreshAll(){
   if (btn) btn.disabled = true;
   try{
     DATA = await store.loadAll();
-    researchEnd = false;
+    researchEnd = false; activityEnd = false;
     renderApp();
     toast('Refreshed');
   }catch(e){
@@ -2603,14 +2607,19 @@ const DEPARTMENTS = ['Marketing','HR','Business Development','Engineering','MD',
 function currentUserName(){
   return (AUTH.profile && (AUTH.profile.full_name || AUTH.profile.email)) || '';
 }
+// Fire-and-forget audit line (PRD §6.17). Writes to Supabase via
+// activityApi.log(), and also prepends a local copy so the Settings log
+// updates instantly without a refetch — a lost line is acceptable for this
+// append-only, non-tamper-evident log (D-2). Same signature as always, so
+// the ~10 call sites don't change.
 function logActivity(action, detail){
-  if (!DATA || !Array.isArray(DATA.activityLog)) return;
-  DATA.activityLog.unshift({
-    id:'act'+Date.now()+Math.random().toString(36).slice(2,6),
-    ts:new Date().toISOString(), user: currentUserName()||'Unattributed', action, detail: detail||''
-  });
-  if (DATA.activityLog.length>200) DATA.activityLog.length = 200;
-  persist();
+  const actorName = currentUserName() || 'Unattributed';
+  const actorId = AUTH.profile && AUTH.profile.id;
+  if (DATA && Array.isArray(DATA.activityLog)){
+    DATA.activityLog.unshift({ id: crypto.randomUUID(), ts: new Date().toISOString(), user: actorName, action, detail: detail || '' });
+    if (DATA.activityLog.length > 200) DATA.activityLog.length = 200;
+  }
+  activityApi.log(actorId, actorName, action, detail);
 }
 
 function renderSettings(){
@@ -2710,16 +2719,20 @@ function renderSettings(){
 
     <div class="card panel">
       <div class="row" style="justify-content:space-between;margin-bottom:12px;">
-        <h3 style="margin-bottom:0;">Activity log <span style="color:var(--faint);text-transform:none;letter-spacing:0;">— this browser only (moves to the server in a later task)</span></h3>
+        <h3 style="margin-bottom:0;">Activity log <span style="color:var(--faint);text-transform:none;letter-spacing:0;">— shared, newest first</span></h3>
         <button class="btn btn-sm btn-ghost" id="clearLogBtn">Clear log</button>
       </div>
-      ${DATA.activityLog.length===0?`<div class="empty">${ICONS.empty}<div>No activity recorded yet in this browser.</div></div>`:
-        DATA.activityLog.slice(0,80).map(a=>`
+      ${DATA.activityLog.length===0?`<div class="empty">${ICONS.empty}<div>No activity recorded yet.</div></div>`:
+        DATA.activityLog.map(a=>`
           <div class="needs-row">
             <span class="t"><b>${esc(a.user)}</b> ${esc(a.action)}${a.detail?' — '+esc(a.detail):''}</span>
             <span class="d">${new Date(a.ts).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</span>
           </div>
         `).join('')}
+      ${(!activityEnd && DATA.activityLog.length >= store.ACTIVITY_PAGE) ? `
+        <div style="text-align:center;margin-top:10px;">
+          <button class="btn btn-sm btn-ghost" id="loadMoreActivityBtn">Load older entries</button>
+        </div>` : ''}
     </div>
   `;
 }
@@ -2772,13 +2785,33 @@ function bindSettingsControls(){
   }));
 
   document.getElementById('addConnectorBtn').addEventListener('click', openAddConnectorModal);
-  document.querySelectorAll('[data-del-connector]').forEach(b=>b.addEventListener('click', ()=>{
-    DATA.settings.connectors = DATA.settings.connectors.filter(c=>c.id!==b.dataset.delConnector); persist(); renderView();
+  document.querySelectorAll('[data-del-connector]').forEach(b=>b.addEventListener('click', async ()=>{
+    const id = b.dataset.delConnector;
+    try{
+      await connectorsApi.remove(id);
+      DATA.settings.connectors = DATA.settings.connectors.filter(c=>c.id!==id);
+      renderView();
+    }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
   }));
   document.getElementById('clearLogBtn').addEventListener('click', ()=>{
-    openConfirmModal('Clear the local activity log? This only affects this browser.', ()=>{
-      DATA.activityLog = []; persist(); renderView(); toast('Log cleared');
+    openConfirmModal('Clear the activity log for everyone? This deletes every entry and can’t be undone.', async ()=>{
+      try{
+        await activityApi.clearAll();
+        DATA.activityLog = []; activityEnd = true; renderView(); toast('Log cleared');
+      }catch(e){ toast('Could not clear — ' + (e.message || 'try again')); }
     }, 'Clear log');
+  });
+  const loadMoreActivityBtn = document.getElementById('loadMoreActivityBtn');
+  if (loadMoreActivityBtn) loadMoreActivityBtn.addEventListener('click', async ()=>{
+    loadMoreActivityBtn.disabled = true;
+    const oldest = DATA.activityLog.reduce((m, a) => (!m || (a.ts || '') < m) ? (a.ts || '') : m, '');
+    try{
+      const { rows, end } = await store.loadMoreActivity(oldest);
+      const have = new Set(DATA.activityLog.map(a => a.id));
+      DATA.activityLog.push(...rows.filter(r => !have.has(r.id)));
+      activityEnd = end;
+      renderView();
+    }catch(e){ toast('Could not load more — ' + (e.message || 'try again')); loadMoreActivityBtn.disabled = false; }
   });
 }
 
@@ -2852,11 +2885,21 @@ function openAddConnectorModal(){
     </div>
   `, body=>{
     body.querySelector('#mCancel').onclick = closeModal;
-    body.querySelector('#mSave').onclick = ()=>{
+    body.querySelector('#mSave').onclick = async ()=>{
       const name = body.querySelector('#mName').value.trim();
       if (!name){ toast('Name required'); return; }
-      DATA.settings.connectors.push({id:'con'+Date.now(), name, type: body.querySelector('#mType').value.trim(), url: body.querySelector('#mUrl').value.trim(), notes: body.querySelector('#mNotes').value.trim()});
-      persist(); closeModal(); renderView(); toast('Connector added');
+      const connector = {
+        id: crypto.randomUUID(), name,
+        type: body.querySelector('#mType').value.trim(),
+        url: normalizeUrlish(body.querySelector('#mUrl').value),
+        notes: body.querySelector('#mNotes').value.trim(),
+      };
+      const save = body.querySelector('#mSave'); save.disabled = true;
+      try{
+        const saved = await connectorsApi.create(connector);
+        DATA.settings.connectors.push(saved);
+        closeModal(); renderView(); toast('Connector added');
+      }catch(e){ toast('Could not add — ' + (e.message || 'try again')); save.disabled = false; }
     };
   });
 }
@@ -3059,7 +3102,7 @@ async function loadDataAndRender(){
   renderLoadingScreen();
   try{
     DATA = await store.loadAll();
-    researchEnd = false;
+    researchEnd = false; activityEnd = false;
     renderApp();
   }catch(e){
     renderLoadingScreen({ error: e.message || 'Could not load your data.' });

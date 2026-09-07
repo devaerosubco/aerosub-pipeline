@@ -130,6 +130,9 @@ export function productToRow(p) {
     status: p.status || 'Active', blurb: p.blurb || null, highlights: p.highlights || [],
   };
 }
+export function connectorToRow(c) {
+  return { name: c.name, type: c.type || null, url: c.url || null, notes: c.notes || null };
+}
 
 /* ============================================================
    assembling nested shapes
@@ -200,6 +203,21 @@ export async function loadMoreResearch(before) {
   return { clips: page, end: page.length < RESEARCH_PAGE };
 }
 
+// Activity log is bounded the same way (PRD §16 S-2/S-12): newest 100 on
+// boot, "Load more" pages older by created_at.
+export const ACTIVITY_PAGE = 100;
+async function fetchActivityPage(before) {
+  let q = supabase.from('activity_log').select('*').order('created_at', { ascending: false }).limit(ACTIVITY_PAGE);
+  if (before) q = q.lt('created_at', before);
+  const { data, error } = await q;
+  if (error) throw error;
+  return (data || []).map(activityFromRow);
+}
+export async function loadMoreActivity(before) {
+  const page = await fetchActivityPage(before);
+  return { rows: page, end: page.length < ACTIVITY_PAGE };
+}
+
 /* ============================================================
    loadAll() — the full boot load (PRD §9: "on boot, load every table")
    ============================================================ */
@@ -207,7 +225,7 @@ export async function loadMoreResearch(before) {
 export async function loadAll() {
   const [
     companies, tasks, productRows, competitors, news, research,
-    events, connectorRows, activityRows, appSettings,
+    events, connectorRows, activityLog, appSettings,
   ] = await Promise.all([
     fetchCompanies(),
     sel('tasks', '*').then(rows => rows.map(taskFromRow)),
@@ -217,7 +235,7 @@ export async function loadAll() {
     fetchResearchPage(null),
     (async () => assembleEvents(await sel('events', '*'), await sel('event_attendees', '*')))(),
     sel('connectors', '*'),
-    sel('activity_log', '*', { order: { col: 'created_at', asc: false }, limit: 100 }),
+    fetchActivityPage(null),
     fetchAppSettings(),
   ]);
 
@@ -229,7 +247,7 @@ export async function loadAll() {
     news,
     research,
     events,
-    activityLog: activityRows.map(activityFromRow),
+    activityLog,
     settings: {
       connectors: connectorRows.map(connectorFromRow),
       lastNewsRefresh: appSettings.lastNewsRefresh,

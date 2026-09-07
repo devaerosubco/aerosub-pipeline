@@ -191,6 +191,28 @@ async function main() {
     member = { client, email, password, userId };
   }
 
+  // --- H2. activity_log RLS: insert-own only, never update (PRD §7.3) -------
+  {
+    const c = member.client;
+    const mkId = () => crypto.randomUUID();
+
+    const ownId = mkId();
+    const { error: insOwn } = await c.from('activity_log').insert({ id: ownId, actor_id: member.userId, actor_name: 'Member', action: 'test own' });
+    ok(!insOwn, 'a member can insert an activity_log row attributed to themselves');
+
+    const { error: insNull } = await c.from('activity_log').insert({ id: mkId(), actor_id: null, actor_name: 'System', action: 'test null actor' });
+    ok(!insNull, 'a member can insert an activity_log row with a null actor');
+
+    const { error: insOther } = await c.from('activity_log').insert({ id: mkId(), actor_id: '00000000-0000-0000-0000-000000000000', actor_name: 'Someone else', action: 'test spoof' });
+    ok(!!insOther, 'a member CANNOT insert an activity_log row attributed to another user');
+
+    const { data: updData, error: updErr } = await c.from('activity_log').update({ action: 'tampered' }).eq('id', ownId).select();
+    ok((updData?.length ?? 0) === 0, 'a member CANNOT update an activity_log row (append-only — no update policy)');
+
+    const { error: delErr } = await c.from('activity_log').delete().eq('id', ownId);
+    ok(!delErr, 'a member can delete an activity_log row ("Clear log", D-2)');
+  }
+
   // --- I. concurrent redemption of one open (non-pinned) token --------------
   {
     const inv = await insertInvite({});

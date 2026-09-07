@@ -13,7 +13,7 @@ Companion docs: [PRD.md](PRD.md), [AUDIT.md](AUDIT.md). Refs like "PRD §16 S-3"
 | 1 — Audit (`AUDIT.md`) | ✅ |
 | 2 — PRD (`PRD.md`) | ✅ (re-scoped down after the "not over-engineered?" review — 18 tables, no realtime) |
 | 3 — Heavy Tasks (`TASKS.md`) | ✅ + build-readiness pass done (2026-09-04) |
-| 4 — Execute | 🟢 **HT0–HT10 done (HT0-5: 2026-09-04; HT6-10: 2026-09-07).** Next: HT11 (Activity Log). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
+| 4 — Execute | 🟢 **HT0–HT11 done (HT0-5: 2026-09-04; HT6-11: 2026-09-07). Every feature view is Supabase-backed.** Next: HT12 (Chrome Extension Rewire). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
 | 5 — Final report | pending |
 
 Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema + seed; `npm run db:check` = 41/41 structural; `npm run test:rls` = anon fully denied; `npm run test:invite` = 25/25 invite/signup matrix; `npm run check:secrets` = clean; `npm run smoke` = real-browser sign-in + dashboard render (now against real Supabase-sourced companies/news, not the localStorage seed); `npx vitest run` = 30/30 (store.js mapping + validate.js).
@@ -203,12 +203,14 @@ Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema
 
 **Acceptance criteria:** Every prototype-logged action inserts an `activity_log` row attributed to `auth.uid()`/`full_name`. Settings shows last 100 + "load more". "Clear log" deletes rows. RLS rejects update + cross-user `actor_id`. "Signed in" logged **only on explicit password submit**.
 
-- [ ] `src/api/activity.js` — `log(action, detail)` → insert `{id, actor_id: auth.uid(), actor_name, action, detail}`.
-- [ ] Replace all `logActivity(...)` sites (stage move, add/remove account, add contact, tag product, log campaign, add event, draft email, export, migrate-local). **Sign-in**: once in `signIn()` on success, not in `onAuthChange`.
-- [ ] Settings log section: `DATA.activityLog` (last 100) + "Load more" (fetch older by `created_at`).
-- [ ] "Clear log" → delete all (confirm modal).
-- [ ] Test: RLS rejects `update` + cross-user `actor_id`; page refresh doesn't add a "Signed in" row.
-  - ↳ note:
+- [x] `src/api/activity.js` — `log(actorId, actorName, action, detail)` (fire-and-forget, caps enforced) + `clearAll()` (delete every row).
+- [x] Kept the `logActivity(action, detail)` signature — **only its body changed** (fires `activityApi.log()` + an optimistic local prepend so the Settings log updates instantly). All ~10 call sites untouched. **Sign-in** is already logged only in the signin submit handler (HT2), never in `onAuthChange` — verified a reload adds no row.
+- [x] Settings log section: shows all of `DATA.activityLog` (store.js loads the newest `ACTIVITY_PAGE = 100`) + a **"Load older entries"** button → `store.loadMoreActivity(before)` (keyset on `created_at`, `activityEnd` flag, resets on boot + Refresh). Copy updated from "this browser only" → "shared, newest first".
+- [x] "Clear log" → `activityApi.clearAll()` (RLS allows member delete, D-2) behind a confirm modal ("for everyone… can't be undone").
+- [x] Test: **5 new `activity_log` RLS assertions in `invite-test.mjs`** (now 30/30): a member can insert own-attributed + null-actor rows, **cannot** insert another user's `actor_id`, **cannot** update any row (append-only), can delete. Real-browser pass (11/11, script deleted after use): sign-in writes exactly one attributed "Signed in" row, a reload adds none, a stage move writes a row, Settings shows them, "Clear log" empties the table, connector add (URL-normalised) + remove persist, the 3 seeded connectors survive a reload. Plus vitest 32/32, db:check 41/41, rls-test 20/20, smoke 7/7, check:secrets clean.
+  - ↳ **scope note:** HT11 also wired **Settings → Connectors** CRUD (`src/api/connectors.js` create/remove, `store.js` `connectorToRow`) — no Heavy Task explicitly owned it but PRD's preserved-feature checklist requires it and it's the last local-only write in the Settings view. Deliberate HT11 addition.
+  - ↳ note: the `migrate-local.js` importer deferred from HT3 (PRD §10.6) is **skipped** — OQ-4 resolved that the seed is the only dataset, the founder confirmed nothing beyond it, and JSON *export* remains as the break-glass snapshot. If a restore path is ever needed it's a contained add (parse the export, `upsert` by id through the existing `api/*.js` modules).
+  - ↳ infra note: `supabase_vector` container flapped again mid-run and broke `db reset` (`LegacyDbSetupError`). Fixed with `docker stop supabase_vector_Aerosub_Pipeline && docker update --restart=no supabase_vector_Aerosub_Pipeline`. Not a code issue; documented in memory.
 
 ---
 
