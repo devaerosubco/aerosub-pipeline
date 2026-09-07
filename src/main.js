@@ -2186,8 +2186,10 @@ function doImportResearch(e){
 }
 
 /* ============================================================
-   REPORT BUILDER (branded export — see doExportReportHtml for the
-   downloads-capability extension allowlist this works around)
+   REPORT BUILDER — a branded, Word-openable .html (with a locked-down CSP
+   <meta> so an injected string can't execute or exfiltrate when the file
+   is opened) plus a plain .md. Preview renders in a fully-sandboxed iframe
+   via srcdoc. Export is a plain Blob + <a download> (D-6).
    ============================================================ */
 const REPORT_SECTIONS = [
   ['profile','Company Profile'],
@@ -2209,7 +2211,9 @@ function buildReportHtml(co, sections){
     </tr>`).join('');
 
   return `<!doctype html>
-<html><head><meta charset="utf-8"><title>${esc(co.name)} — Aerosub Account Briefing</title>
+<html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+<title>${esc(co.name)} — Aerosub Account Briefing</title>
 <style>
   body{font-family:'Inter',Arial,sans-serif;color:${BRAND.ink};margin:0;background:#fff;}
   .letterhead{background:${BRAND.navy};padding:26px 40px;}
@@ -2290,7 +2294,7 @@ function renderReports(){
         <div class="report-note">The .html file opens directly in Word with full Aerosub branding. .md is a plain-text fallback that always works.</div>
       </div>
       <div class="report-preview-wrap">
-        <iframe id="reportPreview" title="Report preview"></iframe>
+        <iframe id="reportPreview" title="Report preview" sandbox referrerpolicy="no-referrer"></iframe>
       </div>
     </div>
   `;
@@ -2313,60 +2317,17 @@ function bindReportsControls(){
   updateReportPreview();
 }
 
-async function doExportReportHtml(){
+function doExportReportHtml(){
   const co = companyById(ui.reportCompanyId);
   if (!co) return;
-  const html = buildReportHtml(co, ui.reportSections);
-  const filename = `Aerosub - ${co.name} Report - ${new Date().toISOString().slice(0,10)}.html`;
-  let downloads = null;
-  try{ downloads = await claude.use('downloads'); }catch(e){ downloads = null; }
-  if (downloads){
-    try{
-      await downloads.save({filename, data: html});
-      toast('Exported '+filename);
-    }catch(err){
-      const code = err && err.code;
-      if (code==='extension_not_enabled' || code==='rejected_extension'){
-        toast('Branded .html export isn’t enabled here — try "Export as .md" instead');
-      } else if (code==='declined'){
-        toast('Export cancelled');
-      } else if (code==='too_large'){
-        toast('Report is too large to export — try fewer sections');
-      } else {
-        toast('Export failed — try "Export as .md" instead');
-      }
-    }
-    return;
-  }
-  try{
-    const blob = new Blob([html], {type:'text/html'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove();
-    URL.revokeObjectURL(url);
-    toast('Exported '+filename);
-  }catch(e){ toast('Export is unavailable in this view'); }
+  downloadFile(`Aerosub - ${co.name} Report - ${new Date().toISOString().slice(0,10)}.html`,
+    buildReportHtml(co, ui.reportSections), 'text/html');
 }
-async function doExportReportMd(){
+function doExportReportMd(){
   const co = companyById(ui.reportCompanyId);
   if (!co) return;
-  const md = buildReportMarkdown(co, ui.reportSections);
-  const filename = `Aerosub - ${co.name} Report - ${new Date().toISOString().slice(0,10)}.md`;
-  let downloads = null;
-  try{ downloads = await claude.use('downloads'); }catch(e){ downloads = null; }
-  if (downloads){
-    try{ await downloads.save({filename, data: md}); toast('Exported '+filename); }
-    catch(err){ toast(err && err.code==='declined' ? 'Export cancelled' : 'Export failed'); }
-    return;
-  }
-  try{
-    const blob = new Blob([md], {type:'text/markdown'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove();
-    URL.revokeObjectURL(url);
-    toast('Exported '+filename);
-  }catch(e){ toast('Export is unavailable in this view'); }
+  downloadFile(`Aerosub - ${co.name} Report - ${new Date().toISOString().slice(0,10)}.md`,
+    buildReportMarkdown(co, ui.reportSections), 'text/markdown');
 }
 
 /* ============================================================
@@ -2569,7 +2530,9 @@ function buildEventReportHtml(ev){
   const dateStr = new Date().toLocaleDateString('en-GB', {day:'2-digit', month:'long', year:'numeric'});
   const attendeeRows = ev.attendees.map(a=>`<tr><td>${esc(a.name)}</td><td>${a.companyId&&companyById(a.companyId)?esc(companyById(a.companyId).name):'—'}</td><td>${esc(a.status)}</td></tr>`).join('');
   return `<!doctype html>
-<html><head><meta charset="utf-8"><title>${esc(ev.name)} — Aerosub Event Brief</title>
+<html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+<title>${esc(ev.name)} — Aerosub Event Brief</title>
 <style>
   body{font-family:'Inter',Arial,sans-serif;color:${BRAND.ink};margin:0;background:#fff;}
   .letterhead{background:${BRAND.navy};padding:26px 40px;}
@@ -2617,41 +2580,15 @@ function buildEventReportMarkdown(ev){
   md += `---\nPrepared via the Aerosub Pipeline tool · ${BRAND.site} · Confidential\n`;
   return md;
 }
-async function doExportEventHtml(id){
+function doExportEventHtml(id){
   const ev = eventById(id); if (!ev) return;
-  const html = buildEventReportHtml(ev);
-  const filename = `Aerosub - ${ev.name} Brief - ${new Date().toISOString().slice(0,10)}.html`;
-  let downloads = null;
-  try{ downloads = await claude.use('downloads'); }catch(e){ downloads = null; }
-  if (downloads){
-    try{ await downloads.save({filename, data: html}); toast('Exported '+filename); }
-    catch(err){ toast(err && err.code==='declined' ? 'Export cancelled' : 'Export failed — try "Export as .md" instead'); }
-    return;
-  }
-  try{
-    const blob = new Blob([html], {type:'text/html'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove();
-    URL.revokeObjectURL(url); toast('Exported '+filename);
-  }catch(e){ toast('Export is unavailable in this view'); }
+  downloadFile(`Aerosub - ${ev.name} Brief - ${new Date().toISOString().slice(0,10)}.html`,
+    buildEventReportHtml(ev), 'text/html');
 }
-async function doExportEventMd(id){
+function doExportEventMd(id){
   const ev = eventById(id); if (!ev) return;
-  const md = buildEventReportMarkdown(ev);
-  const filename = `Aerosub - ${ev.name} Brief - ${new Date().toISOString().slice(0,10)}.md`;
-  let downloads = null;
-  try{ downloads = await claude.use('downloads'); }catch(e){ downloads = null; }
-  if (downloads){
-    try{ await downloads.save({filename, data: md}); toast('Exported '+filename); }
-    catch(err){ toast('Export failed'); }
-    return;
-  }
-  try{
-    const blob = new Blob([md], {type:'text/markdown'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove();
-    URL.revokeObjectURL(url); toast('Exported '+filename);
-  }catch(e){ toast('Export is unavailable in this view'); }
+  downloadFile(`Aerosub - ${ev.name} Brief - ${new Date().toISOString().slice(0,10)}.md`,
+    buildEventReportMarkdown(ev), 'text/markdown');
 }
 
 /* ============================================================
@@ -3612,32 +3549,27 @@ function openAddSolutionModal(){
 
 /* ============================================================
    EXPORT
+   D-6: every export is now a plain Blob + <a download> — the old
+   claude.use('downloads') artifact-host path is gone from all 5 sites.
    D-9: the old "Import data (replace)" is gone — wholesale-replacing DATA
    from a JSON file can't safely wipe a shared Supabase DB from one client.
-   Its replacement, an upsert-merge importer (PRD §10.6, "Migrate my local
-   data"), is deferred alongside HT11. Export stays as a manual JSON snapshot
-   of whatever is currently loaded (PRD §2).
+   Its replacement, an upsert-merge importer (PRD §10.6), is deferred
+   alongside HT11. Export stays as a manual JSON snapshot (PRD §2).
    ============================================================ */
-async function doExport(){
-  logActivity('Exported data (JSON backup)');
-  const json = JSON.stringify(DATA, null, 2);
-  const filename = `aerosub-pipeline-${new Date().toISOString().slice(0,10)}.json`;
+function downloadFile(filename, data, type){
   try{
-    const downloads = await claude.use('downloads');
-    if (downloads){
-      const res = await downloads.save({filename, data: json});
-      if (res && res.accepted===false){ toast('Export cancelled'); } else { toast('Exported ' + filename); }
-      return;
-    }
-  }catch(e){ /* fall through to local fallback */ }
-  try{
-    const blob = new Blob([json], {type:'application/json'});
+    const blob = new Blob([data], { type });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
     toast('Exported ' + filename);
-  }catch(e){ toast('Export is unavailable in this view'); }
+  }catch(e){ toast('Export failed — try again'); }
+}
+function doExport(){
+  logActivity('Exported data (JSON backup)');
+  const json = JSON.stringify(DATA, null, 2);
+  downloadFile(`aerosub-pipeline-${new Date().toISOString().slice(0,10)}.json`, json, 'application/json');
 }
 /* ============================================================
    BOOT — kick off the auth flow (definitions above, PRD §5.5)

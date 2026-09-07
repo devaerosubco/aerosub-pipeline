@@ -13,7 +13,7 @@ Companion docs: [PRD.md](PRD.md), [AUDIT.md](AUDIT.md). Refs like "PRD §16 S-3"
 | 1 — Audit (`AUDIT.md`) | ✅ |
 | 2 — PRD (`PRD.md`) | ✅ (re-scoped down after the "not over-engineered?" review — 18 tables, no realtime) |
 | 3 — Heavy Tasks (`TASKS.md`) | ✅ + build-readiness pass done (2026-09-04) |
-| 4 — Execute | 🟢 **HT0–HT9 done (HT0-5: 2026-09-04; HT6-9: 2026-09-07).** Next: HT10 (Reports & Exports). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
+| 4 — Execute | 🟢 **HT0–HT10 done (HT0-5: 2026-09-04; HT6-10: 2026-09-07).** Next: HT11 (Activity Log). HT13–HT15 (deploy) need OQ-1 + OQ-3. |
 | 5 — Final report | pending |
 
 Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema + seed; `npm run db:check` = 41/41 structural; `npm run test:rls` = anon fully denied; `npm run test:invite` = 25/25 invite/signup matrix; `npm run check:secrets` = clean; `npm run smoke` = real-browser sign-in + dashboard render (now against real Supabase-sourced companies/news, not the localStorage seed); `npx vitest run` = 30/30 (store.js mapping + validate.js).
@@ -189,12 +189,13 @@ Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema
 
 **Acceptance criteria:** Account + section picker, sandboxed live preview, branded `.html` (Word-openable, with CSP `<meta>`) + `.md` — from `DATA`. **All 5** `claude.use('downloads')` sites removed → `Blob` + `<a download>`.
 
-- [ ] `buildReportHtml`/`buildReportMarkdown`/`buildEventReportHtml`/`buildEventReportMarkdown` read from `DATA`.
-- [ ] Add the CSP `<meta>` (PRD §8.3.4) to both exported-HTML templates.
-- [ ] Report preview `<iframe>`: `srcdoc` + `sandbox` (no `allow-scripts`/`allow-same-origin`).
-- [ ] Remove `claude.use('downloads')` from `doExportReportHtml`, `doExportReportMd`, `doExportEventHtml`, `doExportEventMd`, **`doExport`** — `Blob` + `<a download>` only (D-6).
-- [ ] Regression: Reports + Events exports; open an exported `.html` in a browser (nothing runs) + in Word (branding intact).
-  - ↳ note:
+- [x] `buildReport*`/`buildEventReport*` already read from `DATA` — verified (they take `co`/`ev`/`sections` args, all sourced from `DATA`).
+- [x] CSP `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">` added to both `buildReportHtml` and `buildEventReportHtml` heads (covers the inline `<style>` and the data-URI logo; blocks scripts + network).
+- [x] Report preview `<iframe>` → `sandbox` (bare attr = every restriction, no `allow-scripts`/`allow-same-origin`) + `referrerpolicy="no-referrer"`. Already used `srcdoc`.
+- [x] `claude.use('downloads')` **removed from all 5 sites** (`doExport`, `doExportReportHtml`, `doExportReportMd`, `doExportEventHtml`, `doExportEventMd`) → a single `downloadFile(name, data, type)` helper (Blob + `<a download>`). The 4 report/event exporters are now sync one-liners (D-6).
+- [x] Regression: real-browser pass (13/13, script deleted after use): iframe has `sandbox`, preview srcdoc carries the CSP meta, a **seeded `<img onerror>`/`<script>` XSS payload in a company's notes is escaped** (not live) in the preview + the exported `.html` + still inert when the exported file is opened as its own page, `.html`/`.md` for both reports and events download via Blob, sidebar JSON export is valid `DATA`-shaped JSON. Plus vitest 32/32, db:check 41/41, rls-test 20/20, test:invite 25/25, smoke 7/7, check:secrets clean.
+  - ↳ note: "opens in Word with branding intact" not machine-verifiable here — the template is unchanged (letterhead/logo/styles), only the CSP `<meta>` was added, which Word ignores. HT14's manual QA covers a real Word open.
+  - ↳ note: transient infra hiccup during the run — the `supabase_vector` log container was flapping and a `db reset` didn't fully complete (stale profiles/invites + a libuv crash in `db-check`). `docker restart supabase_vector_Aerosub_Pipeline` + a clean reset fixed it; all suites green after. Not a code issue.
 
 ---
 
