@@ -13,7 +13,7 @@ Companion docs: [PRD.md](PRD.md), [AUDIT.md](AUDIT.md). Refs like "PRD §16 S-3"
 | 1 — Audit (`AUDIT.md`) | ✅ |
 | 2 — PRD (`PRD.md`) | ✅ (re-scoped down after the "not over-engineered?" review — 18 tables, no realtime) |
 | 3 — Heavy Tasks (`TASKS.md`) | ✅ + build-readiness pass done (2026-09-04) |
-| 4 — Execute | 🟢 **HT0–HT13 done (HT0-5: 2026-09-04; HT6-13: 2026-09-07).** Next: HT14 (Testing & QA). HT15 (deploy) needs OQ-1 + OQ-3. |
+| 4 — Execute | 🟢 **HT0–HT14 done (HT0-5: 2026-09-04; HT6-13: 2026-09-07; HT14: 2026-09-09).** Next: HT15 (deploy — prod Supabase project is set up + verified; awaiting the deploy engineer + OQ-3 Resend). HT16 = roadmap doc. |
 | 5 — Final report | pending |
 
 Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema + seed; `npm run db:check` = 41/41 structural; `npm run test:rls` = anon fully denied; `npm run test:invite` = 25/25 invite/signup matrix; `npm run check:secrets` = clean; `npm run smoke` = real-browser sign-in + dashboard render (now against real Supabase-sourced companies/news, not the localStorage seed); `npx vitest run` = 30/30 (store.js mapping + validate.js).
@@ -255,14 +255,14 @@ Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema
 
 **Acceptance criteria:** The PRD §14 preserved-feature checklist verified on the deployed app; migration / XSS / extension / auth / deploy tests pass; results in `QA-RESULTS.md`.
 
-- [ ] Walk the PRD §14 checklist on the deployed app → `QA-RESULTS.md`.
-- [ ] Migration: `seed.sql` ×2 no dupes; task + news dates relative; sample local import correct.
-- [ ] XSS matrix (in-app + exports).
-- [ ] Extension: online / offline / anon-key-only.
-- [ ] Auth: invite accept/reject (5 cases), confirm, reset + set-new-password, profile-less screen, sign-out clears data.
-- [ ] Deploy: HTTP→HTTPS, headers, CSP blocks inline script, not framable.
-- [ ] Cross-browser smoke: Chrome + Firefox — board drag, drawer edits, exports.
-  - ↳ note:
+- [x] Walk the PRD §14 checklist → `QA-RESULTS.md` at repo root (local — no prod yet; the deploy-only rows are flagged for re-run in HT15).
+- [x] Migration: `seed.sql` ×2 no dupes; task + news dates relative. (`on conflict do nothing`; `db:check` 41/41 unchanged after a re-apply. Local import = OQ-4 dropped.)
+- [x] XSS matrix (in-app + exports) — `npm run test:xss` 6/6 (every free-text field of every table).
+- [x] Extension: online / offline / anon-key-only — `npm run test:ext` 23/23. Made `ext-save-test.mjs` self-cleaning so it's repeatable, not reset-only.
+- [x] Auth: invite accept/reject (5 cases), confirm, reset + set-new-password, profile-less screen, sign-out clears data — `npm run test:invite` 30/30 + `npm run test:rls` 39/39 (profile-less section).
+- [x] Deploy: headers, CSP blocks inline script, not framable — `npm run test:headers` 11/11 (local, headers injected). HTTP→HTTPS + prod headers re-run on the live URL in HT15.
+- [x] Cross-browser smoke: Chrome + Firefox — board move, drawer edits, exports — new `scripts/crossbrowser-smoke.mjs` (`npm run test:crossbrowser`) 14/14 (7 per browser).
+  - ↳ note: full local suite green — vitest 43 · db-check 41 · rls 39 · invite 30 · xss 6 · headers 11 · ext 23 · smoke 7 · crossbrowser 14 · check:secrets clean. HTML5 DnD in the cross-browser test is driven by a real `DataTransfer` event sequence (synthetic mouse moves don't fire native drag). Manual items left for the operator (in `QA-RESULTS.md` §4): open an exported `.html` in real Word; load-unpacked the extension in real Chrome; the HTTP→HTTPS + real-email + second-device checks on the HT15 deployment.
 
 ---
 

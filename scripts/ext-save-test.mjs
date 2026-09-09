@@ -21,6 +21,17 @@ const svc = createClient(URL_, SERVICE, { auth: { persistSession: false } });
 let pass = 0, fail = 0;
 const ok = (c, l) => { console.log(`${c ? "PASS" : "FAIL"}  ${l}`); c ? pass++ : fail++; };
 
+// This test writes real rows; make it self-cleaning so it can run repeatedly
+// against a persistent DB (not only right after `db reset`).
+const TITLES = ["Ext single clip", "Ext queued A", "Ext queued B", "nope"];
+const createdUsers = [];
+async function cleanup() {
+  await svc.from("research_clips").delete().in("title", TITLES);
+  for (const uid of createdUsers) await svc.auth.admin.deleteUser(uid).catch(() => {});
+  await svc.from("invites").delete().like("token", "ext-%");
+}
+await cleanup();
+
 async function bootstrapMember() {
   const anon = createClient(URL_, ANON, { auth: { persistSession: false, detectSessionInUrl: false } });
   const token = "ext-" + Date.now();
@@ -41,6 +52,7 @@ async function bootstrapMember() {
   const client = createClient(URL_, ANON, { auth: { persistSession: false, detectSessionInUrl: false } });
   const { data, error } = await client.auth.signInWithPassword({ email, password });
   if (error) throw error;
+  createdUsers.push(data.session.user.id);
   return { client, userId: data.session.user.id, email };
 }
 
@@ -108,6 +120,8 @@ const member = await bootstrapMember();
   ok(Array.isArray(manifest.host_permissions) && manifest.host_permissions[0].includes(new URL(URL_).host), "manifest host_permissions target the Supabase origin");
   ok(!!manifest.content_security_policy?.extension_pages, "manifest sets content_security_policy.extension_pages");
 }
+
+await cleanup();
 
 console.log(`\next-save-test: ${fail === 0 ? "OK" : "FAILED"}  (${pass} pass, ${fail} fail)`);
 process.exit(fail === 0 ? 0 : 1);

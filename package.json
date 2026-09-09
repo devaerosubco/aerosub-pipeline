@@ -16,6 +16,7 @@
     "test:invite": "node scripts/invite-test.mjs",
     "test:xss": "node scripts/xss-test.mjs",
     "test:headers": "node scripts/headers-test.mjs",
+    "test:crossbrowser": "node scripts/crossbrowser-smoke.mjs",
     "test:ext": "node chrome-extension/build.mjs && node scripts/ext-save-test.mjs && node scripts/ext-popup-test.mjs",
     "ext:build": "node chrome-extension/build.mjs",
     "check:secrets": "bash scripts/check-no-secrets.sh"
