@@ -13,7 +13,7 @@ Companion docs: [PRD.md](PRD.md), [AUDIT.md](AUDIT.md). Refs like "PRD §16 S-3"
 | 1 — Audit (`AUDIT.md`) | ✅ |
 | 2 — PRD (`PRD.md`) | ✅ (re-scoped down after the "not over-engineered?" review — 18 tables, no realtime) |
 | 3 — Heavy Tasks (`TASKS.md`) | ✅ + build-readiness pass done (2026-09-04) |
-| 4 — Execute | 🟢 **HT0–HT14 done (HT0-5: 2026-09-04; HT6-13: 2026-09-07; HT14: 2026-09-09).** Next: HT15 (deploy — prod Supabase project is set up + verified; awaiting the deploy engineer + OQ-3 Resend). HT16 = roadmap doc. |
+| 4 — Execute | 🟢 **HT0–HT14 + HT16 done (HT0-5: 2026-09-04; HT6-13: 2026-09-07; HT14+HT16: 2026-09-09).** Only HT15 (Deployment) left — prod Supabase project is set up + verified; awaiting the deploy engineer (Cloudflare Pages) + OQ-3 Resend. |
 | 5 — Final report | pending |
 
 Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema + seed; `npm run db:check` = 41/41 structural; `npm run test:rls` = anon fully denied; `npm run test:invite` = 25/25 invite/signup matrix; `npm run check:secrets` = clean; `npm run smoke` = real-browser sign-in + dashboard render (now against real Supabase-sourced companies/news, not the localStorage seed); `npx vitest run` = 30/30 (store.js mapping + validate.js).
@@ -289,9 +289,9 @@ Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema
 
 **Acceptance criteria:** `ROADMAP.md` at repo root — each PRD §12 item with V1 hook + V2 delivery (tables, Edge Function, schedule, external services). No V2 code.
 
-- [ ] Write `ROADMAP.md` from PRD §12: live feeds, reminders, email send/track, enrichment, PDF/DOCX, forecasting (on `company_stage_changes` — no new table), full-text search, realtime/presence (if co-use grows), self-serve offboarding, read-auditing caveat.
-- [ ] Link it from `README.md` and PRD §12.
-  - ↳ note:
+- [x] Write `ROADMAP.md` from PRD §12: live feeds, reminders, email send/track, enrichment, PDF/DOCX, forecasting (on `company_stage_changes` — no new table), full-text search, realtime/presence (if co-use grows), self-serve offboarding, read-auditing caveat.
+- [x] Link it from `README.md` and PRD §12.
+  - ↳ note: `ROADMAP.md` at repo root — 10 sections, each with V1 hook + V2 delivery (new tables, Edge Functions, `pg_cron` schedules, external services) + carried ground rules (no RBAC, RLS default-deny on new tables, secrets server-side only) + a value-for-effort sequencing suggestion. §10 is the read-auditing caveat (not planned — flagged as a conscious future decision). PRD §12 links it above the table; README gets a "Roadmap" section (+ a note that the full README rewrite is HT15). No V2 code.
 
 ---
 

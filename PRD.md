@@ -301,6 +301,10 @@ If the tool ever becomes heavily co-used, realtime on just the `companies` table
 
 ## 12. V2 roadmap (design-only)
 
+Expanded into [ROADMAP.md](ROADMAP.md) (HT16) — per item: the V1 hook, the V2
+tables / Edge Functions / schedules / external services, plus the read-auditing
+caveat and a sequencing suggestion.
+
 | V2 feature | V1 hook | V2 delivery |
 |---|---|---|
 | Live news / competitor feeds | `news_items` (`live`, `dismissed_at`), manual rows now | Edge Function on `pg_cron` upserts, skips `dismissed_at` |
