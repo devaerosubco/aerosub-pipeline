@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import {
   companyFromRow, companyToRow, flagFromRow, contactFromRow, contactToRow, recommendedFromRow,
   productFromRow, productToRow, taskFromRow, competitorFromRow, competitorToRow, campaignFromRow, campaignToRow,
-  newsFromRow, newsToRow, researchFromRow, eventFromRow, attendeeFromRow,
+  newsFromRow, newsToRow, researchFromRow, eventFromRow, eventToRow, attendeeFromRow, attendeeToRow,
   connectorFromRow, activityFromRow,
 } from './store.js';
 
@@ -171,6 +171,35 @@ describe('events + attendees', () => {
     const a = attendeeFromRow({ id: 'a1', event_id: 'ev1', name: 'Someone', company_id: null, status: 'Likely attends' });
     expect(a.eventId).toBe('ev1');
     expect(a.companyId).toBe('');
+  });
+
+  it('round-trips an event through eventToRow -> eventFromRow', () => {
+    const app = {
+      name: 'ADIPEC', organizer: 'dmg events', location: 'Abu Dhabi',
+      startDate: '2026-11-09', endDate: '2026-11-12', cost: '~$1,500', currency: 'USD',
+      website: 'adipec.com', benefits: ['reach', 'partners'], notes: 'go early',
+    };
+    const back = eventFromRow({ id: 'ev9', ...eventToRow(app) });
+    expect(back.name).toBe(app.name);
+    expect(back.startDate).toBe(app.startDate);
+    expect(back.benefits).toEqual(app.benefits);
+    expect(back.notes).toBe(app.notes);
+  });
+
+  it('eventToRow nulls empty optionals but keeps name, defaults currency', () => {
+    const row = eventToRow({ name: 'X', benefits: [] });
+    expect(row.name).toBe('X');
+    expect(row.organizer).toBeNull();
+    expect(row.start_date).toBeNull();
+    expect(row.currency).toBe('USD');
+    expect(row.benefits).toEqual([]);
+  });
+
+  it('attendeeToRow maps companyId -> company_id and nulls the blanks', () => {
+    expect(attendeeToRow({ name: 'A', companyId: 'seplat', status: 'Confirmed' }))
+      .toEqual({ name: 'A', company_id: 'seplat', status: 'Confirmed' });
+    expect(attendeeToRow({ name: 'B' }))
+      .toEqual({ name: 'B', company_id: null, status: null });
   });
 });
 

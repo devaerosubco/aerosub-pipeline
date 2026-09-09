@@ -1,9 +1,14 @@
 # Code review notes — pre-deployment pass (2026-09-09)
 
 A self-review of the Supabase rebuild while HT15 (deploy) is blocked on the
-deployment engineer. Grouped by severity. Nothing here blocks the *deploy*
-itself, but **A1 is a real preserved-feature gap** that should land before we
-call V1 done.
+deployment engineer. Grouped by severity.
+
+> **Status (2026-09-09, commit after this doc):** A1, A2, B1, B3, B4 **fixed**
+> — `src/api/events.js` added and verified (14/14 real-browser), `refetchView`
+> extended to every view that has a write module, the dead `persist()` and the
+> unused `html\`\`` helper removed, the stale `store.js` comments corrected.
+> C1 (test-helper extraction) and C2 (`clearAll` filter) are **still open** —
+> low priority, no behaviour impact.
 
 ---
 

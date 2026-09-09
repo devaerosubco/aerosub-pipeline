@@ -30,7 +30,7 @@ npm test && npm run db:check && npm run test:rls && npm run test:invite \
 
 | Script | Command | What it proves | Result |
 |---|---|---|---|
-| Unit — mappers + validators | `npm test` (vitest) | `store.js` row⇄`DATA` round-trips for every entity; `validate.js` rules; extension `clips.js` logic | **43/43 PASS** |
+| Unit — mappers + validators | `npm test` (vitest) | `store.js` row⇄`DATA` round-trips for every entity; `validate.js` rules; extension `clips.js` logic | **46/46 PASS** |
 | Schema / seed structure | `npm run db:check` | 18 tables RLS enabled+forced, 66 policies, seed row counts, append-only columns, the `auth.users` signup trigger | **41/41 PASS** |
 | RLS matrix | `npm run test:rls` | anon + profile-less → 0 rows / denied on all 18 tables (select+insert+update+delete); a real member → exactly the CRUD §7 allows; `profiles` update-own-only + id/email lock; `activity_log` no-update; `company_stage_changes` select-only but the trigger writes history; `invites.consumed_at` not client-writable | **39/39 PASS** |
 | Invite / signup | `npm run test:invite` | no / garbage / expired / consumed / email-mismatch / revoked token → rejected; `>30d` expiry CHECK; valid → confirm → `profiles` row with `full_name`, invite consumed; two concurrent redemptions → one winner; password reset → recovery → new password works, old fails; profile-less session reads nothing; 5 `activity_log` RLS asserts | **30/30 PASS** |
@@ -85,8 +85,9 @@ JSON export remains as the manual snapshot path.
 Every view's **reads** have come from Supabase since HT4; each view's **writes**
 were wired to a real `src/api/*.js` module in its own Heavy Task and verified
 then with a dedicated real-browser Playwright pass (HT4 14/14, HT5 10/10, HT6
-14/14, HT7 12/12, HT8 11/11, HT9 12/12, HT10 13/13, HT11 11/11 — see `TASKS.md`
-HT4–HT13 notes). This is the consolidated walk.
+14/14, HT7 12/12, HT8 11/11, HT9 12/12, HT10 13/13, HT11 11/11, Events/A1 14/14
+— see `TASKS.md` HT4–HT13 notes and `REVIEW-NOTES.md`). This is the
+consolidated walk.
 
 | Area | Items | Backed by | Status |
 |---|---|---|---|
@@ -99,19 +100,24 @@ HT4–HT13 notes). This is the consolidated walk.
 | **Plan** | grouped tasks (overdue/week/later/done), toggle from Plan + drawer, delete, add general (`company_id NULL`) or per-company; deleting a company cascades its tasks, general tasks survive | HT8 | ✅ |
 | **Products & Offers** | 6 products, **name/tag edit (E-1)**, kind/status/blurb, highlights (`text[]`), tag/untag both directions, **re-tag updates rationale, no dup (E-2)**, delete untags all (`company_products` cascade) | HT9 | ✅ |
 | **Reports** | account + section picker, **sandboxed** live preview (`srcdoc` + bare `sandbox`), branded `.html` with CSP `<meta>`, `.md` — all from `DATA`; download via `Blob` + `<a download>` (no `claude.use`) | HT10 | ✅ (Word open = manual, §4) |
-| **Events** | 6 events, details edit, benefits (`text[]`), attendees, notes, `.html` / `.md` brief | HT4 reads · HT10 exports | ⚠️ **reads + exports only** — the drawer's detail/benefit/attendee/notes edits and "New event" still write through the no-op `persist()` (no `src/api/events.js` was ever built; no HT owned it). Edits are session-only. Tracked in `REVIEW-NOTES.md` §A1. |
+| **Events** | 6 events, details edit, benefits (`text[]`), attendees, notes, `.html` / `.md` brief | HT4 reads · HT10 exports · **A1 writes** | ✅ — `src/api/events.js` added in the review pass (create / editDetails / setNotes / setBenefits / remove / addAttendee / removeAttendee). Verified real-browser 14/14: every drawer edit + "New event" + delete persists across a full reload, cross-checked against the `events` / `event_attendees` rows. |
 | **Settings** | team list = `profiles` + own name/department edit (E-3), **invite create / list / revoke**, connectors CRUD (URL-normalised), activity log last-100 + "Load older" + "Clear log" | HT2 / HT11 | ✅ |
 | **JSON export** | sidebar "Export data (.json)" → valid `DATA`-shaped JSON via `Blob` | HT10 | ✅ |
 | **News manage modal** | add (writes `kind: null` for "General"), delete → `dismissed_at` (team-wide soft delete), live tag, "last refreshed" badge (hidden when null) | HT4 | ✅ |
 | **Auth** | invite-link signup (email prefill+lock when pinned), email confirm, sign in, forgot password → set new password, profile-less "ask for a new link" screen, sign-out clears `DATA` | HT2 · `test:invite` | ✅ |
 | **Activity log** | every prototype-logged action → an `activity_log` row attributed to `auth.uid()` / `full_name`; "Signed in" only on explicit password submit (a reload adds no row) | HT11 | ✅ |
 
-One gap found in this pass: **Events editing is not persisted** (reads and the
-`.html`/`.md` brief work; drawer edits and "New event" run through the no-op
-`persist()` — no `src/api/events.js` exists). See `REVIEW-NOTES.md` §A1. Every
-other prototype feature persists to Supabase. Deviations are the D-list in PRD
-§15 (all intentional — e.g. the passcode gate → real auth, "Import data
-(replace)" → deferred upsert-merge, `claude.use('downloads')` → `Blob`).
+The pre-deployment review pass (`REVIEW-NOTES.md`) found **Events editing didn't
+persist** (no `src/api/events.js` — no Heavy Task had owned it) and that
+**refetch-on-navigate only covered Companies/Dashboard/News**. Both were fixed:
+A1 wires every Events write to Supabase (verified 14/14); A2 extends
+`store.refetchView` to Contacts / Competition / Plan / Products / Events /
+Reports so navigating to a view re-pulls a teammate's saved changes without the
+header Refresh. The last no-op `persist()` and the unused `html\`\`` helper were
+removed. Every prototype feature now persists to Supabase. Remaining deviations
+are the D-list in PRD §15 (all intentional — e.g. the passcode gate → real auth,
+"Import data (replace)" → deferred upsert-merge, `claude.use('downloads')` →
+`Blob`).
 
 ---
 

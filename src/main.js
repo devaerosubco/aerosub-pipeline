@@ -15,6 +15,7 @@ import * as tasksApi from './api/tasks.js';
 import * as productsApi from './api/products.js';
 import * as activityApi from './api/activity.js';
 import * as connectorsApi from './api/connectors.js';
+import * as eventsApi from './api/events.js';
 import { emailRule, normalizeLinkedin, normalizeUrlish, urlRule, dateRule, validateChanged } from './validate.js';
 
 /* ============================================================
@@ -664,13 +665,6 @@ let activityEnd = false;
 // null while the auth screen or the post-sign-in loading state is showing.
 let DATA = null;
 
-// No-op as of HT4 — Supabase, not localStorage, is DATA's source of truth
-// for companies/news (real writes go through companiesApi.*/newsApi.* and
-// patch DATA themselves). Views not yet rewired (contacts/tasks/competitors/
-// research/events/connectors/activity log — HT5, HT6, HT7, HT8, HT9, HT11)
-// still call persist() after mutating DATA in place; those edits are
-// session-only until their own Heavy Task adds a real api/*.js write.
-function persist(){}
 function toast(msg){
   const el = document.getElementById('toast');
   el.textContent = msg;
@@ -695,22 +689,6 @@ function daysUntil(iso){
 }
 function esc(s){
   return String(s==null?'':s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-}
-// `html` tagged template — every ${interpolation} is esc()'d automatically
-// unless it's wrapped in safe() (for known-good markup: ICONS, nested html``
-// results, arrays of html`` results). Use it for any NEW innerHTML string so
-// a missing esc() is impossible. (PRD §8.3.3 — the existing renders were
-// audited to already esc() every user value; see scripts/xss-test.mjs.)
-function safe(s){ return { __html: Array.isArray(s) ? s.map(x => (x && x.__html) || esc(x)).join('') : String(s) }; }
-function html(strings, ...values){
-  return safe(strings.reduce((out, str, i) => {
-    if (i === 0) return str;
-    const v = values[i - 1];
-    const piece = v && v.__html !== undefined ? v.__html
-      : Array.isArray(v) ? v.map(x => (x && x.__html !== undefined) ? x.__html : esc(x)).join('')
-      : esc(v);
-    return out + piece + str;
-  }, '')).__html;
 }
 function stripProto(url){
   let s = String(url==null?'':url).trim();
@@ -865,8 +843,9 @@ async function refreshCurrentView(view){
   try{
     const patch = await store.refetchView(view);
     if (!patch || !DATA) return;
-    if (patch.companies) DATA.companies = patch.companies;
-    if (patch.news) DATA.news = patch.news;
+    for (const k of ['companies', 'news', 'competitors', 'tasks', 'solutions', 'events']){
+      if (patch[k]) DATA[k] = patch[k];
+    }
     if (ui.view === view) renderApp();   // only re-render if still on that view
   }catch(e){ /* silent — the header Refresh button is the explicit retry path */ }
 }
@@ -2437,7 +2416,7 @@ function renderEventDrawer(){
           ev.attendees.map((a,i)=>`
             <div class="bullet solution" style="align-items:center;">
               <span style="flex:1;">${esc(a.name)}${a.companyId&&companyById(a.companyId)?` <span class="chip chip-teal" style="margin-left:4px;">${esc(companyById(a.companyId).name)}</span>`:''} — <span style="color:var(--muted);">${esc(a.status)}</span></span>
-              <button class="x" data-del-attendee="${i}">${ICONS.x}</button>
+              <button class="x" data-del-attendee="${a.id}">${ICONS.x}</button>
             </div>
           `).join('')}
         <div class="add-inline"><input id="newAttName" placeholder="Person or organisation…"></div>
@@ -2473,36 +2452,67 @@ function renderEventDrawer(){
 function bindEventDrawer(ev){
   document.getElementById('drawerCloseBtn').addEventListener('click', closeDrawer);
   document.getElementById('deleteEventBtn').addEventListener('click', ()=>{
-    openConfirmModal(`Remove ${ev.name}?`, ()=>{
-      DATA.events = DATA.events.filter(x=>x.id!==ev.id);
-      persist(); closeDrawer(); renderApp();
-      toast('Event removed');
+    openConfirmModal(`Remove ${ev.name}?`, async ()=>{
+      try{
+        await eventsApi.remove(ev.id);
+        DATA.events = DATA.events.filter(x=>x.id!==ev.id);
+        closeDrawer(); renderApp();
+        toast('Event removed');
+      }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
     });
   });
-  document.getElementById('saveEventDetailsBtn').addEventListener('click', ()=>{
-    ev.name = document.getElementById('evName').value.trim()||ev.name;
-    ev.organizer = document.getElementById('evOrganizer').value.trim();
-    ev.location = document.getElementById('evLocation').value.trim();
-    ev.startDate = document.getElementById('evStart').value || ev.startDate;
-    ev.endDate = document.getElementById('evEnd').value || ev.endDate;
-    ev.cost = document.getElementById('evCost').value.trim();
-    ev.website = document.getElementById('evWebsite').value.trim();
-    persist(); renderApp(); openEventDrawer(ev.id); toast('Event details saved');
+  document.getElementById('saveEventDetailsBtn').addEventListener('click', async ()=>{
+    const name = document.getElementById('evName').value.trim();
+    if (!name){ toast('Name required'); return; }
+    const patch = {
+      name,
+      organizer: document.getElementById('evOrganizer').value.trim(),
+      location: document.getElementById('evLocation').value.trim(),
+      startDate: document.getElementById('evStart').value || ev.startDate,
+      endDate: document.getElementById('evEnd').value || ev.endDate,
+      cost: document.getElementById('evCost').value.trim(),
+      website: normalizeUrlish(document.getElementById('evWebsite').value),
+    };
+    try{
+      await eventsApi.editDetails(ev.id, patch);
+      Object.assign(ev, patch);
+      renderView(); renderEventDrawer(); toast('Event details saved');
+    }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
   });
-  document.getElementById('addBenefitBtn').addEventListener('click', ()=>{
+  document.getElementById('addBenefitBtn').addEventListener('click', async ()=>{
     const inp = document.getElementById('newBenefit');
-    if (inp.value.trim()){ ev.benefits.push(inp.value.trim()); persist(); openEventDrawer(ev.id); }
+    const v = inp.value.trim();
+    if (!v) return;
+    const next = [...ev.benefits, v];
+    try{ await eventsApi.setBenefits(ev.id, next); ev.benefits = next; renderEventDrawer(); }
+    catch(e){ toast('Could not add — ' + (e.message || 'try again')); }
   });
-  document.querySelectorAll('[data-del-benefit]').forEach(b=>b.addEventListener('click', ()=>{ ev.benefits.splice(+b.dataset.delBenefit,1); persist(); openEventDrawer(ev.id); }));
-  document.getElementById('addAttendeeBtn').addEventListener('click', ()=>{
+  document.querySelectorAll('[data-del-benefit]').forEach(b=>b.addEventListener('click', async ()=>{
+    const next = ev.benefits.filter((_,i)=>i!==+b.dataset.delBenefit);
+    try{ await eventsApi.setBenefits(ev.id, next); ev.benefits = next; renderEventDrawer(); }
+    catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+  }));
+  document.getElementById('addAttendeeBtn').addEventListener('click', async ()=>{
     const name = document.getElementById('newAttName').value.trim();
     if (!name){ toast('Add a name first'); return; }
-    ev.attendees.push({id:ev.id+'-a'+Date.now(), name, companyId: document.getElementById('newAttCo').value, status: document.getElementById('newAttStatus').value});
-    persist(); openEventDrawer(ev.id);
+    const attendee = { name, companyId: document.getElementById('newAttCo').value, status: document.getElementById('newAttStatus').value };
+    try{
+      const saved = await eventsApi.addAttendee(ev.id, attendee);
+      ev.attendees.push(saved);
+      renderEventDrawer();
+    }catch(e){ toast('Could not add — ' + (e.message || 'try again')); }
   });
-  document.querySelectorAll('[data-del-attendee]').forEach(b=>b.addEventListener('click', ()=>{ ev.attendees.splice(+b.dataset.delAttendee,1); persist(); openEventDrawer(ev.id); }));
-  document.getElementById('saveEventNotesBtn').addEventListener('click', ()=>{
-    ev.notes = document.getElementById('evNotes').value; persist(); toast('Notes saved');
+  document.querySelectorAll('[data-del-attendee]').forEach(b=>b.addEventListener('click', async ()=>{
+    try{
+      await eventsApi.removeAttendee(b.dataset.delAttendee);
+      ev.attendees = ev.attendees.filter(a=>a.id!==b.dataset.delAttendee);
+      renderEventDrawer();
+    }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+  }));
+  document.getElementById('saveEventNotesBtn').addEventListener('click', async ()=>{
+    const notes = document.getElementById('evNotes').value;
+    try{ await eventsApi.setNotes(ev.id, notes); ev.notes = notes; toast('Notes saved'); }
+    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
   });
   document.getElementById('exportEventHtmlBtn').addEventListener('click', ()=>doExportEventHtml(ev.id));
   document.getElementById('exportEventMdBtn').addEventListener('click', ()=>doExportEventMd(ev.id));
@@ -2531,18 +2541,25 @@ function openAddEventModal(){
     </div>
   `, body=>{
     body.querySelector('#mCancel').onclick = closeModal;
-    body.querySelector('#mSave').onclick = ()=>{
+    body.querySelector('#mSave').onclick = async ()=>{
       const name = body.querySelector('#mName').value.trim();
       if (!name){ toast('Name required'); return; }
-      const id = name.toLowerCase().replace(/[^a-z0-9]+/g,'-') + '-' + Math.random().toString(36).slice(2,5);
-      DATA.events.push({
-        id, name, organizer: body.querySelector('#mOrganizer').value.trim(), location: body.querySelector('#mLocation').value.trim(),
-        startDate: body.querySelector('#mStart').value || new Date().toISOString().slice(0,10),
-        endDate: body.querySelector('#mEnd').value || body.querySelector('#mStart').value || new Date().toISOString().slice(0,10),
+      const start = body.querySelector('#mStart').value || new Date().toISOString().slice(0,10);
+      const event = {
+        id: crypto.randomUUID(), name,
+        organizer: body.querySelector('#mOrganizer').value.trim(),
+        location: body.querySelector('#mLocation').value.trim(),
+        startDate: start,
+        endDate: body.querySelector('#mEnd').value || start,
         cost: body.querySelector('#mCost').value.trim(), currency:'USD', website:'',
         benefits:[], attendees:[], notes:''
-      });
-      persist(); closeModal(); renderApp(); logActivity('Added an event', name); toast('Event added');
+      };
+      const saveBtn = body.querySelector('#mSave'); saveBtn.disabled = true;
+      try{
+        const saved = await eventsApi.create(event);
+        DATA.events.push(saved);
+        closeModal(); renderApp(); logActivity('Added an event', name); toast('Event added');
+      }catch(e){ toast('Could not add — ' + (e.message || 'try again')); saveBtn.disabled = false; }
     };
   });
 }

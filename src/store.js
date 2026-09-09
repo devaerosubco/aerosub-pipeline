@@ -1,11 +1,11 @@
 // Replaces the localStorage `Store` (HT4). Loads every table from Supabase
 // into the prototype's in-memory `DATA` shape (PRD §6.20) so the render code
-// barely changes. Only Companies + News have real Supabase-backed writes as
-// of this task — everything else (contacts, tasks, competitors, research,
-// events, connectors, activity log) is still read here but keeps being
-// mutated in-memory by the old `persist()`-based code until its own Heavy
-// Task (HT5-HT9/HT11) adds a matching api/*.js module; those edits are
-// session-only and won't survive a reload or "Refresh" until then.
+// barely changes. Every view now has a real Supabase-backed api/*.js write
+// module (companies, news, contacts, competitors, research, tasks, products,
+// events, connectors, activity log). `refetchView()` below re-pulls a view's
+// slice on navigate (PRD §9) for all of them except research (keyset
+// pagination — the "Load older" button owns that) and settings (its team /
+// invite / connector panels load on first open).
 import { supabase } from './supabase.js';
 
 const arr = (v) => (Array.isArray(v) ? v : []);
@@ -133,6 +133,17 @@ export function productToRow(p) {
 export function connectorToRow(c) {
   return { name: c.name, type: c.type || null, url: c.url || null, notes: c.notes || null };
 }
+export function eventToRow(e) {
+  return {
+    name: e.name, organizer: e.organizer || null, location: e.location || null,
+    start_date: e.startDate || null, end_date: e.endDate || null,
+    cost: e.cost || null, currency: e.currency || 'USD',
+    website: e.website || null, benefits: e.benefits || [], notes: e.notes || null,
+  };
+}
+export function attendeeToRow(a) {
+  return { name: a.name, company_id: a.companyId || null, status: a.status || null };
+}
 
 /* ============================================================
    assembling nested shapes
@@ -230,10 +241,10 @@ export async function loadAll() {
     fetchCompanies(),
     sel('tasks', '*').then(rows => rows.map(taskFromRow)),
     sel('products', '*'),
-    (async () => assembleCompetitors(await sel('competitors', '*'), await sel('competitor_campaigns', '*')))(),
+    fetchCompetitors(),
     fetchNews(),
     fetchResearchPage(null),
-    (async () => assembleEvents(await sel('events', '*'), await sel('event_attendees', '*')))(),
+    fetchEvents(),
     sel('connectors', '*'),
     fetchActivityPage(null),
     fetchAppSettings(),
@@ -256,15 +267,45 @@ export async function loadAll() {
 }
 
 /* ============================================================
-   refetchView(name) — re-pull one view's slice on navigate (PRD §9).
-   Only companies/dashboard/news are Supabase-backed as of HT4; every other
-   view name is a no-op until its own Heavy Task adds a real refetch here.
+   refetchView(name) — re-pull one view's slice on navigate (PRD §9), so you
+   see teammates' saved changes without a full "Refresh". Returns a partial
+   patch for the caller to merge into DATA, or null for the views that manage
+   their own loading (research pagination, settings panels).
    ============================================================ */
 
+async function fetchCompetitors() {
+  const [competitorRows, campaignRows] = await Promise.all([
+    sel('competitors', '*'), sel('competitor_campaigns', '*'),
+  ]);
+  return assembleCompetitors(competitorRows, campaignRows);
+}
+async function fetchEvents() {
+  const [eventRows, attendeeRows] = await Promise.all([
+    sel('events', '*'), sel('event_attendees', '*'),
+  ]);
+  return assembleEvents(eventRows, attendeeRows);
+}
+
 export async function refetchView(name) {
-  if (name === 'companies' || name === 'dashboard') {
-    const [companies, news] = await Promise.all([fetchCompanies(), fetchNews()]);
-    return { companies, news };
+  switch (name) {
+    case 'companies':
+    case 'dashboard': {
+      const [companies, news] = await Promise.all([fetchCompanies(), fetchNews()]);
+      return { companies, news };
+    }
+    // contacts live inside DATA.companies; reports reads companies too
+    case 'contacts':
+    case 'reports':
+      return { companies: await fetchCompanies() };
+    case 'competitors':
+      return { competitors: await fetchCompetitors() };
+    case 'tasks':
+      return { tasks: (await sel('tasks', '*')).map(taskFromRow) };
+    case 'solutions':
+      return { solutions: (await sel('products', '*')).map(productFromRow) };
+    case 'events':
+      return { events: await fetchEvents() };
+    default:
+      return null;
   }
-  return null;
 }
