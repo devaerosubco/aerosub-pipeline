@@ -728,6 +728,31 @@ td .sub{font-size:11px;color:var(--muted);font-weight:400;}
 .field textarea{resize:vertical;min-height:60px;}
 .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;}
 
+/* password reveal toggle */
+.pw-field{position:relative;}
+.pw-field input{width:100%;padding-right:34px;}
+.pw-toggle{
+  position:absolute;top:50%;right:4px;transform:translateY(-50%);
+  display:flex;align-items:center;justify-content:center;
+  width:26px;height:26px;padding:0;border:none;background:none;
+  color:var(--faint);cursor:pointer;border-radius:6px;
+}
+.pw-toggle:hover{color:var(--ink);background:var(--surface-hover);}
+
+/* light/dark theme toggle — fixed, visible from the auth screens too */
+.theme-toggle{
+  position:fixed;top:14px;right:14px;z-index:110;
+  width:34px;height:34px;display:flex;align-items:center;justify-content:center;
+  border:1px solid var(--line-strong);border-radius:50%;
+  background:var(--surface-raised);color:var(--muted);
+  cursor:pointer;box-shadow:var(--shadow);
+}
+.theme-toggle:hover{color:var(--ink);background:var(--surface-hover);}
+/* it sits top-right, same corner as the drawer's close button — get out of
+   the way while a drawer or modal is open rather than intercept its clicks */
+body:has(.drawer.open) .theme-toggle,
+body:has(.modal-scrim.open) .theme-toggle{display:none;}
+
 .toast{
   position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(8px);
   background:var(--navy);color:#fff;

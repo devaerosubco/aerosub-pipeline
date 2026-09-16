@@ -48,6 +48,10 @@ const ICONS = {
   shield:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><path d="M10 2.5l6.5 2.4v4.6c0 4.3-2.7 7.3-6.5 8.2C6.2 16.8 3.5 13.8 3.5 9.5V4.9L10 2.5z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M7.2 9.8l1.9 1.9 3.7-4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   send:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><path d="M17.3 2.7L2.5 8.3l5.7 2.3M17.3 2.7L11.9 17.5l-3.7-6.9M17.3 2.7L8.2 10.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   lock:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><rect x="4" y="9" width="12" height="8.5" rx="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M6.3 9V6.3a3.7 3.7 0 0 1 7.4 0V9" stroke="currentColor" stroke-width="1.3"/><circle cx="10" cy="13" r="1.1" fill="currentColor"/></svg>',
+  eye:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><path d="M1.5 10S4.7 4 10 4s8.5 6 8.5 6-3.2 6-8.5 6-8.5-6-8.5-6z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="10" cy="10" r="2.6" stroke="currentColor" stroke-width="1.3"/></svg>',
+  eyeOff:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><path d="M2.8 2.8l14.4 14.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M8.3 4.3C8.9 4.1 9.4 4 10 4c5.3 0 8.5 6 8.5 6s-.9 1.7-2.5 3.2M5.2 5.9C3 7.4 1.5 10 1.5 10s3.2 6 8.5 6c1 0 1.9-.2 2.7-.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.1 8.1a2.6 2.6 0 0 0 3.6 3.7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
+  sun:'<svg viewBox="0 0 20 20" width="15" height="15" fill="none"><circle cx="10" cy="10" r="3.6" stroke="currentColor" stroke-width="1.4"/><path d="M10 1.8v2.1M10 16.1v2.1M18.2 10h-2.1M3.9 10H1.8M15.6 4.4l-1.5 1.5M5.9 14.1l-1.5 1.5M15.6 15.6l-1.5-1.5M5.9 5.9L4.4 4.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+  moon:'<svg viewBox="0 0 20 20" width="15" height="15" fill="none"><path d="M17 11.8A7.5 7.5 0 1 1 8.2 3a6 6 0 0 0 8.8 8.8z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>',
 };
 
 /* ============================================================
@@ -689,6 +693,71 @@ function daysUntil(iso){
 }
 function esc(s){
   return String(s==null?'':s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+/* ============================================================
+   THEME — light/dark toggle. The prototype already had CSS
+   variables for both (:root = light, prefers-color-scheme: dark
+   or [data-theme] override it) but no manual switch — it only
+   followed the OS setting. This is a per-device display
+   preference, so it lives in localStorage, not Supabase.
+   ============================================================ */
+const THEME_KEY = 'aerosub_theme';
+function effectiveTheme(){
+  const forced = document.documentElement.dataset.theme;
+  if (forced === 'light' || forced === 'dark') return forced;
+  return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+}
+function applyTheme(pref){
+  if (pref === 'light' || pref === 'dark') document.documentElement.dataset.theme = pref;
+  else delete document.documentElement.dataset.theme;
+  const btn = document.getElementById('themeToggleBtn');
+  if (btn){
+    const isDark = effectiveTheme() === 'dark';
+    btn.innerHTML = isDark ? ICONS.sun : ICONS.moon;
+    btn.title = isDark ? 'Switch to light mode' : 'Switch to dark mode';
+    btn.setAttribute('aria-label', btn.title);
+  }
+}
+function initTheme(){
+  let saved = null;
+  try{ saved = localStorage.getItem(THEME_KEY); }catch(e){}
+  applyTheme(saved);
+  const btn = document.getElementById('themeToggleBtn');
+  if (btn) btn.addEventListener('click', ()=>{
+    const next = effectiveTheme() === 'dark' ? 'light' : 'dark';
+    try{ localStorage.setItem(THEME_KEY, next); }catch(e){}
+    applyTheme(next);
+  });
+}
+
+/* ============================================================
+   PASSWORD FIELDS — a reveal/hide toggle on every password input
+   (PRD had none; testers asked to see what they're typing).
+   ============================================================ */
+function pwField(label, id, opts = {}){
+  const auto = opts.autocomplete || 'current-password';
+  const ph = opts.placeholder ? ` placeholder="${esc(opts.placeholder)}"` : '';
+  return `<div class="field">
+    <label>${esc(label)}</label>
+    <div class="pw-field">
+      <input id="${id}" type="password" autocomplete="${auto}"${ph}>
+      <button type="button" class="pw-toggle" data-pw-toggle="${id}" aria-label="Show password" title="Show password">${ICONS.eye}</button>
+    </div>
+  </div>`;
+}
+function bindPasswordToggles(root){
+  (root || document).querySelectorAll('[data-pw-toggle]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const inp = document.getElementById(btn.dataset.pwToggle);
+      if (!inp) return;
+      const show = inp.type === 'password';
+      inp.type = show ? 'text' : 'password';
+      btn.innerHTML = show ? ICONS.eyeOff : ICONS.eye;
+      btn.title = show ? 'Hide password' : 'Show password';
+      btn.setAttribute('aria-label', btn.title);
+    });
+  });
 }
 function stripProto(url){
   let s = String(url==null?'':url).trim();
@@ -2949,6 +3018,7 @@ function authCard(inner){
        <div class="gate-brand">AEROSUB</div>${inner}
      </div></div>`;
   try{ document.getElementById('modalScrim').classList.remove('open'); }catch(e){}
+  bindPasswordToggles();
 }
 function authMsg(text, kind){
   const el = document.getElementById('aMsg');
@@ -2972,7 +3042,7 @@ function renderAuth(){
       <p>You've been invited to the Aerosub Business Development Pipeline. Set up your login below.</p>
       <div class="field"><label>Full name</label><input id="aName" autocomplete="name"></div>
       <div class="field"><label>Email</label><input id="aEmail" type="email" autocomplete="username" value="${esc(AUTH.pinnedEmail)}" ${lockEmail?'readonly':''}></div>
-      <div class="field"><label>Password</label><input id="aPass" type="password" autocomplete="new-password" placeholder="At least 10 characters"></div>
+      ${pwField('Password', 'aPass', { autocomplete: 'new-password', placeholder: 'At least 10 characters' })}
       <button class="btn btn-primary" id="aSubmit" style="width:100%;justify-content:center;">Create account</button>
       <div class="gate-msg" id="aMsg"></div>
       <button class="linklike gate-alt" id="aToSignin">Already have an account? Sign in</button>
@@ -3044,8 +3114,8 @@ function renderAuth(){
     authCard(`
       <h2>Set a new password</h2>
       <p>Choose a new password for your account.</p>
-      <div class="field"><label>New password</label><input id="aPass" type="password" autocomplete="new-password" placeholder="At least 10 characters"></div>
-      <div class="field"><label>Confirm password</label><input id="aPass2" type="password" autocomplete="new-password"></div>
+      ${pwField('New password', 'aPass', { autocomplete: 'new-password', placeholder: 'At least 10 characters' })}
+      ${pwField('Confirm password', 'aPass2', { autocomplete: 'new-password' })}
       <button class="btn btn-primary" id="aSubmit" style="width:100%;justify-content:center;">Update password</button>
       <div class="gate-msg" id="aMsg"></div>
     `);
@@ -3081,7 +3151,7 @@ function renderAuth(){
     <h2>Sign in</h2>
     <p>Aerosub Business Development Pipeline — team access.</p>
     <div class="field"><label>Email</label><input id="aEmail" type="email" autocomplete="username"></div>
-    <div class="field"><label>Password</label><input id="aPass" type="password" autocomplete="current-password"></div>
+    ${pwField('Password', 'aPass', { autocomplete: 'current-password' })}
     <button class="btn btn-primary" id="aSubmit" style="width:100%;justify-content:center;">Sign in</button>
     <div class="gate-msg" id="aMsg"></div>
     <button class="linklike gate-alt" id="aForgot">Forgot password?</button>
@@ -3672,4 +3742,5 @@ function doExport(){
 /* ============================================================
    BOOT — kick off the auth flow (definitions above, PRD §5.5)
    ============================================================ */
+initTheme();
 boot();
