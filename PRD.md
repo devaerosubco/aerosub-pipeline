@@ -1,7 +1,7 @@
 # Aerosub Pipeline — Product Requirements (V1: MVP → Production)
 
 Status: draft for build · Date: 2026-09-03 · Owner: engineering
-Companion docs: [AUDIT.md](AUDIT.md), [TASKS.md](TASKS.md)
+Companion doc: [TASKS.md](TASKS.md)
 
 > **Scope note (2026-09-03):** the tool will be used **infrequently, by a small team, usually one person at a time**. This PRD is deliberately scoped to that. Things a high-traffic collaborative app would need — realtime push, optimistic UI, CRDT-ish conflict handling, normalised child tables for every list, a DB-trigger sanitisation layer, self-serve offboarding — are **cut or deferred** and called out in §15/§16 with the reasoning. What's kept is the irreducible core: real accounts, one shared database, RLS, and not losing the research data.
 

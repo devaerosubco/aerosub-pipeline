@@ -722,7 +722,7 @@ function applyTheme(pref){
 function initTheme(){
   let saved = null;
   try{ saved = localStorage.getItem(THEME_KEY); }catch(e){}
-  applyTheme(saved);
+  applyTheme(saved || 'dark'); // no saved preference yet → default to dark, not the OS setting
   const btn = document.getElementById('themeToggleBtn');
   if (btn) btn.addEventListener('click', ()=>{
     const next = effectiveTheme() === 'dark' ? 'light' : 'dark';
@@ -2781,28 +2781,25 @@ function renderSettings(){
         Create a single-use link and send it to a new teammate however you like. They set their own name, email and password.
       </p>
       ${firstLoad ? `<div class="empty" style="padding:14px;">Loading…</div>` : `
+      ${(()=>{ const active = invites.filter(inv=>invitesApi.inviteStatus(inv)==='active'); return `
       <div class="tablewrap">
         <table>
           <thead><tr><th>For</th><th>Status</th><th>Expires</th><th></th></tr></thead>
           <tbody>
-            ${invites.map(inv=>{
-              const st = invitesApi.inviteStatus(inv);
-              return `
+            ${active.map(inv=>`
               <tr>
                 <td>${inv.email?esc(inv.email):'<span class="sub">anyone with the link</span>'}</td>
-                <td><span class="chip ${st==='active'?'chip-medium':st==='used'?'chip-low':'chip-high'}">${st}</span></td>
+                <td><span class="chip chip-medium">active</span></td>
                 <td class="sub">${new Date(inv.expires_at).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</td>
                 <td style="white-space:nowrap;text-align:right;">
-                  ${st==='active'?`
-                    <button class="btn btn-sm" data-copy-invite="${esc(inv.token)}" data-invite-email="${esc(inv.email||'')}">Copy link</button>
-                    <button class="btn btn-sm" data-revoke-invite="${esc(inv.id)}">Revoke</button>`:''}
+                  <button class="btn btn-sm" data-copy-invite="${esc(inv.token)}" data-invite-email="${esc(inv.email||'')}">Copy link</button>
+                  <button class="btn btn-sm" data-revoke-invite="${esc(inv.id)}">Revoke</button>
                 </td>
-              </tr>`;
-            }).join('')}
+              </tr>`).join('')}
           </tbody>
         </table>
       </div>
-      ${invites.length===0?`<div class="empty">${ICONS.empty}<div>No invites yet.</div></div>`:''}`}
+      ${active.length===0?`<div class="empty">${ICONS.empty}<div>No invites yet.</div></div>`:''}`; })()}`}
     </div>
 
     <div class="card panel">

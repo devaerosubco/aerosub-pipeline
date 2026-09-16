@@ -10,6 +10,9 @@ dist/
 .env.test
 .env.production
 
+# local-only runbook (not part of the repo)
+DEPLOY.md
+
 # supabase local
 supabase/.branches/
 supabase/.temp/

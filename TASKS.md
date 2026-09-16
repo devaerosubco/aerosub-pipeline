@@ -2,7 +2,7 @@
 
 Work top to bottom. Don't start a Heavy Task until every subtask of the previous one is `- [x]` and its acceptance criteria are met. Check boxes off the moment a subtask is done. Add a one-line `↳ note:` under any subtask where something non-obvious happened.
 
-Companion docs: [PRD.md](PRD.md), [AUDIT.md](AUDIT.md). Refs like "PRD §16 S-3" point into the PRD.
+Companion doc: [PRD.md](PRD.md). Refs like "PRD §16 S-3" point into the PRD.
 
 > **This plan is deliberately small.** The tool will be used infrequently, mostly by one person at a time. No realtime, no optimistic UI, no child tables for scalar lists, no DB sanitisation triggers, no self-serve offboarding (PRD §16). What's here is the irreducible core.
 
@@ -10,7 +10,7 @@ Companion docs: [PRD.md](PRD.md), [AUDIT.md](AUDIT.md). Refs like "PRD §16 S-3"
 
 | Step | State |
 |---|---|
-| 1 — Audit (`AUDIT.md`) | ✅ |
+| 1 — Audit | ✅ (findings folded into PRD.md) |
 | 2 — PRD (`PRD.md`) | ✅ (re-scoped down after the "not over-engineered?" review — 18 tables, no realtime) |
 | 3 — Heavy Tasks (`TASKS.md`) | ✅ + build-readiness pass done (2026-09-04) |
 | 4 — Execute | 🟢 **HT0–HT14 + HT16 done (HT0-5: 2026-09-04; HT6-13: 2026-09-07; HT14+HT16: 2026-09-09).** Only HT15 (Deployment) left — prod Supabase project is set up + verified; awaiting the deploy engineer (Cloudflare Pages) + OQ-3 Resend. |
@@ -263,7 +263,8 @@ Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema
 - [x] Deploy: headers, CSP blocks inline script, not framable — `npm run test:headers` 11/11 (local, headers injected). HTTP→HTTPS + prod headers re-run on the live URL in HT15.
 - [x] Cross-browser smoke: Chrome + Firefox — board move, drawer edits, exports — new `scripts/crossbrowser-smoke.mjs` (`npm run test:crossbrowser`) 14/14 (7 per browser).
   - ↳ note: full local suite green — vitest 46 · db-check 41 · rls 39 · invite 30 · xss 6 · headers 11 · ext 23 · smoke 7 · crossbrowser 14 · check:secrets clean. HTML5 DnD in the cross-browser test is driven by a real `DataTransfer` event sequence (synthetic mouse moves don't fire native drag). Manual items left for the operator (in `QA-RESULTS.md` §4): open an exported `.html` in real Word; load-unpacked the extension in real Chrome; the HTTP→HTTPS + real-email + second-device checks on the HT15 deployment.
-  - ↳ note: a pre-deployment code-review pass (`REVIEW-NOTES.md`) found + fixed a real gap — **Events editing never persisted** (no `src/api/events.js`; no HT had owned it). Added the module + wired the drawer/add/delete handlers + verified real-browser 14/14. Also A2: extended `store.refetchView` to Contacts/Competition/Plan/Products/Events/Reports (was Companies/Dashboard/News only) so navigate-to-view re-pulls teammates' changes per PRD §9. Removed the now-dead `persist()` and the unused `html\`\`` helper. `QA-RESULTS.md` Events row corrected.
+  - ↳ note: a pre-deployment code-review pass found + fixed a real gap — **Events editing never persisted** (no `src/api/events.js`; no HT had owned it). Added the module + wired the drawer/add/delete handlers + verified real-browser 14/14. Also A2: extended `store.refetchView` to Contacts/Competition/Plan/Products/Events/Reports (was Companies/Dashboard/News only) so navigate-to-view re-pulls teammates' changes per PRD §9. Removed the now-dead `persist()` and the unused `html\`\`` helper. `QA-RESULTS.md` Events row corrected.
+  - [ ] *(deferred, low priority)* Test-infra cleanup from that review pass, still open: **C1** — extract the "bootstrap a confirmed member" dance (copy-pasted in 7 scripts: `browser-smoke.mjs`, `crossbrowser-smoke.mjs`, `demo-user.mjs`, `ext-save-test.mjs`, `invite-test.mjs`, `rls-test.mjs`, `xss-test.mjs`) into `scripts/lib/test-helpers.mjs` (`loadTestEnv()`, `bootstrapConfirmedMember({fullName})`, `pollMailpitLink(email, since)`); **C2** — `activity.js` `clearAll()` uses `.neq('id', '')` to match all rows — works, but `.not('id', 'is', null)` reads as intent. No behaviour impact either way.
 
 ---
 

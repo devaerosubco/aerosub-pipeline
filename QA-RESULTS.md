@@ -86,7 +86,7 @@ Every view's **reads** have come from Supabase since HT4; each view's **writes**
 were wired to a real `src/api/*.js` module in its own Heavy Task and verified
 then with a dedicated real-browser Playwright pass (HT4 14/14, HT5 10/10, HT6
 14/14, HT7 12/12, HT8 11/11, HT9 12/12, HT10 13/13, HT11 11/11, Events/A1 14/14
-— see `TASKS.md` HT4–HT13 notes and `REVIEW-NOTES.md`). This is the
+— see `TASKS.md` HT4–HT14 notes). This is the
 consolidated walk.
 
 | Area | Items | Backed by | Status |
@@ -107,7 +107,7 @@ consolidated walk.
 | **Auth** | invite-link signup (email prefill+lock when pinned), email confirm, sign in, forgot password → set new password, profile-less "ask for a new link" screen, sign-out clears `DATA` | HT2 · `test:invite` | ✅ |
 | **Activity log** | every prototype-logged action → an `activity_log` row attributed to `auth.uid()` / `full_name`; "Signed in" only on explicit password submit (a reload adds no row) | HT11 | ✅ |
 
-The pre-deployment review pass (`REVIEW-NOTES.md`) found **Events editing didn't
+The pre-deployment review pass (see `TASKS.md` HT14) found **Events editing didn't
 persist** (no `src/api/events.js` — no Heavy Task had owned it) and that
 **refetch-on-navigate only covered Companies/Dashboard/News**. Both were fixed:
 A1 wires every Events write to Supabase (verified 14/14); A2 extends
