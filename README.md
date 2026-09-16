@@ -44,3 +44,14 @@ Both are **curated, not live**. The sandboxed environment this tool runs in cann
 ## The Chrome extension (`chrome-extension/`)
 
 See `chrome-extension/README.md`. In short: browse the web normally, click the Aerosub icon on anything relevant, jot a summary/potential/contact, and export a batch of clips as JSON to import into the app's Research tab.
+
+## Roadmap
+
+Planned V2 work (live feeds, reminders, email send/track, enrichment,
+PDF/DOCX, forecasting, full-text search, realtime) is designed out in
+[ROADMAP.md](ROADMAP.md).
+
+> **Note:** this README still describes the original single-file localStorage
+> build. The app is being rebuilt on Supabase (real accounts, one shared
+> database, RLS) on the `supabase-rebuild` branch — see [PRD.md](PRD.md) and
+> [TASKS.md](TASKS.md). This README is rewritten in HT15 (Deployment).

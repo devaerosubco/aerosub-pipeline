@@ -1,0 +1,48 @@
+{
+  "name": "aerosub-pipeline",
+  "version": "0.0.0",
+  "description": "Aerosub Pipeline — internal BD tool",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "lint": "echo \"(no linter yet)\"",
+    "smoke": "node scripts/browser-smoke.mjs",
+    "seed:gen": "node scripts/gen-seed-source.mjs && node scripts/extract-seed.mjs",
+    "db:check": "node scripts/db-check.mjs",
+    "db:reset": "supabase db reset",
+    "test:rls": "node scripts/rls-test.mjs",
+    "test:invite": "node scripts/invite-test.mjs",
+    "test:xss": "node scripts/xss-test.mjs",
+    "test:headers": "node scripts/headers-test.mjs",
+    "test:crossbrowser": "node scripts/crossbrowser-smoke.mjs",
+    "test:ext": "node chrome-extension/build.mjs && node scripts/ext-save-test.mjs && node scripts/ext-popup-test.mjs",
+    "ext:build": "node chrome-extension/build.mjs",
+    "check:secrets": "bash scripts/check-no-secrets.sh"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/devaerosubco/aerosub-pipeline.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/devaerosubco/aerosub-pipeline/issues"
+  },
+  "homepage": "https://github.com/devaerosubco/aerosub-pipeline#readme",
+  "private": true,
+  "devDependencies": {
+    "jsdom": "^30.0.1",
+    "playwright": "^1.62.1",
+    "supabase": "^2.116.0",
+    "vite": "^8.2.2",
+    "vitest": "^5.0.0"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.115.0",
+    "dotenv": "^17.4.2"
+  }
+}

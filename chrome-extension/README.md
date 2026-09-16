@@ -1,27 +1,62 @@
 # Aerosub Research Clipper (Chrome extension)
 
-Saves pages, summaries and contacts from anywhere on the web into a queue you can import into the **Research** tab of the Aerosub Pipeline app.
+Save pages, summaries and contacts from anywhere on the web **straight into
+the Research tab** of the Aerosub Pipeline app. You sign in with the same
+account you use for the app; clips you capture appear in Research for the
+whole team.
 
-## Install (unpacked — this isn't on the Chrome Web Store)
+## Build it
 
-1. Open Chrome and go to `chrome://extensions`
-2. Turn on **Developer mode** (top-right toggle)
-3. Click **Load unpacked**
-4. Select this `chrome-extension` folder
-5. Pin the Aerosub icon to your toolbar (puzzle-piece icon → pin) for one-click access
+The extension bundles `@supabase/supabase-js`, so it has to be built (it
+isn't a plain folder of files any more):
+
+```
+npm install
+node chrome-extension/build.mjs      # or: npm run ext:build
+```
+
+That reads `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` from the repo
+`.env` and writes a ready-to-load extension to **`chrome-extension/dist/`**
+(only the public anon key is baked in — never a service key). Re-run it
+whenever those values change (e.g. pointing at the production project).
+
+## Install (unpacked — not on the Chrome Web Store)
+
+1. Open Chrome → `chrome://extensions`
+2. Turn on **Developer mode** (top-right)
+3. **Load unpacked** → select **`chrome-extension/dist/`**
+4. Pin the Aerosub icon to your toolbar
 
 ## Use it
 
-1. On any page worth capturing, click the Aerosub icon
-2. The title, URL and a suggested summary (from the page's meta description, or whatever text you had selected) are pre-filled — edit as needed
-3. Fill in **Potential for Aerosub** and, if you found one, a **key contact**
-4. Click **Save to Research** — it's stored locally in the extension, not sent anywhere
-5. When you've collected a batch, open the **Saved** tab and click **Export .json** (or **Copy JSON** to paste directly)
-6. In the Aerosub Pipeline app, go to the **Research** tab → **Import clips** → pick the exported file. New clips are *added*, not merged over existing ones — nothing gets overwritten.
-7. From there you can link a clip to an account, or promote its contact straight into that account's contact list.
+1. **Account tab → Sign in** with your Aerosub Pipeline email + password.
+   (No sign-up here — get an invite link from a teammate and complete it in
+   the app first.)
+2. On any page worth keeping, click the Aerosub icon. Title, URL and a
+   suggested summary (from the page's meta description or your selection)
+   are pre-filled.
+3. Fill in **Potential for Aerosub** and any **key contact**, then
+   **Save to Research**.
+   - Signed in and online → the clip goes straight into the Research tab,
+     attributed to you.
+   - Signed out or offline → it's held in a local **Queue**. Sign in (or
+     click **Sync now** on the Queue tab) and it uploads.
+4. In the app, open **Research** to see it — link it to an account, or
+   promote its contact into that account's contact list.
+
+## Break-glass export
+
+The **Queue** tab still has **Export .json** / **Copy JSON**. That's only
+for when syncing isn't possible at all — the app's **Research → Import
+clips** accepts the exported file. Normal use needs none of this.
 
 ## Notes
 
-- Nothing here talks to a server — everything stays in the browser (`chrome.storage.local`) until you explicitly export it.
-- Works on any regular `http(s)` page. Chrome's own internal pages (`chrome://…`, the Web Store) can't be read by extensions, so the summary auto-fill won't work there — you can still type one in by hand.
-- **Clear all saved clips** wipes the extension's local queue — export first if you still need them.
+- The extension talks to the same Supabase backend as the app, using the
+  public anon key and your signed-in session. Row-level security is the
+  protection — the key alone can't read or write anything.
+- Works on regular `http(s)` pages. Chrome's own pages (`chrome://…`, the
+  Web Store) can't be read by extensions, so summary auto-fill is skipped
+  there — type one in by hand.
+- **Clear the queue** wipes only the local unsynced queue — export first if
+  those clips haven't uploaded.
