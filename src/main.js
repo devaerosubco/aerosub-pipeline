@@ -18,6 +18,9 @@ import * as connectorsApi from './api/connectors.js';
 import * as eventsApi from './api/events.js';
 import * as profilesApi from './api/profiles.js';
 import * as categoriesApi from './api/categories.js';
+import * as servicesApi from './api/services.js';
+import { uploadFile, signedUrl, removeFile } from './storage.js';
+import { csvToObjects } from './csv.js';
 import { emailRule, normalizeLinkedin, normalizeUrlish, urlRule, dateRule, validateChanged } from './validate.js';
 
 /* ============================================================
@@ -646,9 +649,12 @@ const ui = {
   companyFilter:{priority:'', stage:''},
   competitorFilter:{modality:'', threat:''},
   search:'',
-  drawerKind:null,        // 'company' | 'product' | 'competitor' | 'event' | null
+  storeTab:'products',    // 'products' | 'services' — Store sub-nav (V2 HT-B)
+  storeShowArchived:false,
+  drawerKind:null,        // 'company' | 'product' | 'service' | 'competitor' | 'event' | null
   drawerCompanyId:null,
   drawerProductId:null,
+  drawerServiceId:null,
   drawerCompetitorId:null,
   drawerEventId:null,
   drawerScrollTop:0,
@@ -781,6 +787,7 @@ function stripProto(url){
 }
 function companyById(id){ return DATA.companies.find(c=>c.id===id); }
 function solutionById(id){ return DATA.solutions.find(s=>s.id===id); }
+function serviceById(id){ return DATA.services.find(s=>s.id===id); }
 function initials(name){
   return name.replace(/[^A-Za-z ]/g,'').split(' ').filter(Boolean).slice(0,2).map(w=>w[0]).join('').toUpperCase();
 }
@@ -793,7 +800,7 @@ function navCounts(){
     companies: DATA.companies.length,
     contacts: DATA.companies.reduce((a,c)=>a+c.contacts.length,0),
     tasks: DATA.tasks.filter(t=>!t.done).length,
-    products: DATA.solutions.length,
+    products: DATA.solutions.length + DATA.services.length,
     competitors: DATA.competitors.length,
     research: DATA.research.length,
     events: DATA.events.length,
@@ -810,7 +817,7 @@ function renderApp(){
     {id:'events', label:'Events', icon:ICONS.calendar, count:n.events},
     {id:'research', label:'Research', icon:ICONS.clip, count:n.research},
     {id:'tasks', label:'Plan', icon:ICONS.task, count:n.tasks},
-    {id:'solutions', label:'Products & Offers', icon:ICONS.bolt, count:n.products},
+    {id:'solutions', label:'Store', icon:ICONS.bolt, count:n.products},
     {id:'reports', label:'Reports', icon:ICONS.doc},
     {id:'settings', label:'Settings', icon:ICONS.shield},
   ];
@@ -849,12 +856,12 @@ function renderApp(){
         ${['companies','contacts','solutions','competitors','research','events'].includes(ui.view) ? `
         <div class="search-wrap">
           ${ICONS.search}
-          <input id="searchInput" placeholder="Search ${ui.view==='solutions'?'products':ui.view}…" value="${esc(ui.search)}">
+          <input id="searchInput" placeholder="Search ${ui.view==='solutions'?ui.storeTab:ui.view}…" value="${esc(ui.search)}">
         </div>` : '<div style="margin-left:auto"></div>'}
         ${ui.view==='companies' ? `<button class="btn btn-primary" id="addCompanyBtn">${ICONS.plus} Account</button>`:''}
         ${ui.view==='contacts' ? `<button class="btn btn-primary" id="addContactBtn">${ICONS.plus} Contact</button>`:''}
         ${ui.view==='tasks' ? `<button class="btn btn-primary" id="addTaskBtn">${ICONS.plus} Task</button>`:''}
-        ${ui.view==='solutions' ? `<button class="btn btn-primary" id="addSolutionBtn">${ICONS.plus} Product</button>`:''}
+        ${ui.view==='solutions' ? `<button class="btn btn-ghost" id="bulkUploadStoreBtn">${ICONS.upload} Bulk upload</button><button class="btn btn-primary" id="addSolutionBtn">${ICONS.plus} ${ui.storeTab==='services'?'Service':'Product'}</button>`:''}
         ${ui.view==='competitors' ? `<button class="btn btn-primary" id="addCompetitorBtn">${ICONS.plus} Competitor</button>`:''}
         ${ui.view==='events' ? `<button class="btn btn-primary" id="addEventBtn">${ICONS.plus} Event</button>`:''}
         ${ui.view==='research' ? `<button class="btn btn-ghost" id="importResearchBtn">${ICONS.upload} Import clips</button><input type="file" id="importResearchFile" accept="application/json" style="display:none"><button class="btn btn-primary" id="addResearchBtn">${ICONS.plus} Clip</button>`:''}
@@ -867,7 +874,7 @@ function renderApp(){
 }
 
 function viewTitle(){
-  return ({dashboard:'Overview', companies:'Companies', contacts:'Contacts', tasks:'Plan', solutions:'Products & Offers', competitors:'Competition Dashboard', research:'Research', reports:'Report Builder', events:'Events', settings:'Settings'})[ui.view];
+  return ({dashboard:'Overview', companies:'Companies', contacts:'Contacts', tasks:'Plan', solutions:'Store', competitors:'Competition Dashboard', research:'Research', reports:'Report Builder', events:'Events', settings:'Settings'})[ui.view];
 }
 function viewCrumb(){
   return ({dashboard:'Pipeline / Overview', companies:'Pipeline / Accounts', contacts:'Pipeline / People', tasks:'Pipeline / Actions', solutions:'Pipeline / Catalog', competitors:'Pipeline / Market Watch', research:'Pipeline / Clips', reports:'Pipeline / Export', events:'Pipeline / Events', settings:'Pipeline / Admin'})[ui.view];
@@ -903,7 +910,9 @@ function bindShell(){
   const addTaskBtn = document.getElementById('addTaskBtn');
   if (addTaskBtn) addTaskBtn.addEventListener('click', ()=>openAddTaskModal(null));
   const addSolutionBtn = document.getElementById('addSolutionBtn');
-  if (addSolutionBtn) addSolutionBtn.addEventListener('click', openAddSolutionModal);
+  if (addSolutionBtn) addSolutionBtn.addEventListener('click', ()=> ui.storeTab==='services' ? openAddServiceModal() : openAddSolutionModal());
+  const bulkUploadStoreBtn = document.getElementById('bulkUploadStoreBtn');
+  if (bulkUploadStoreBtn) bulkUploadStoreBtn.addEventListener('click', ()=>openBulkUploadModal(ui.storeTab==='services'?'service':'product'));
   const addCompetitorBtn = document.getElementById('addCompetitorBtn');
   if (addCompetitorBtn) addCompetitorBtn.addEventListener('click', openAddCompetitorModal);
   const addResearchBtn = document.getElementById('addResearchBtn');
@@ -926,7 +935,7 @@ async function refreshCurrentView(view){
   try{
     const patch = await store.refetchView(view);
     if (!patch || !DATA) return;
-    for (const k of ['companies', 'news', 'competitors', 'tasks', 'solutions', 'events']){
+    for (const k of ['companies', 'news', 'competitors', 'tasks', 'solutions', 'services', 'events']){
       if (patch[k]) DATA[k] = patch[k];
     }
     if (ui.view === view) renderApp();   // only re-render if still on that view
@@ -1364,11 +1373,20 @@ function openDrawer(id){
 function openProductDrawer(id){
   ui.drawerKind = 'product';
   ui.drawerProductId = id;
-  ui.drawerCompanyId = null;
+  ui.drawerCompanyId = null; ui.drawerServiceId = null;
   document.getElementById('scrim').classList.add('open');
   document.getElementById('drawer').classList.add('open');
   document.getElementById('scrim').onclick = closeDrawer;
   renderProductDrawer();
+}
+function openServiceDrawer(id){
+  ui.drawerKind = 'service';
+  ui.drawerServiceId = id;
+  ui.drawerCompanyId = null; ui.drawerProductId = null;
+  document.getElementById('scrim').classList.add('open');
+  document.getElementById('drawer').classList.add('open');
+  document.getElementById('scrim').onclick = closeDrawer;
+  renderServiceDrawer();
 }
 function openCompetitorDrawer(id){
   ui.drawerKind = 'competitor';
@@ -1386,6 +1404,7 @@ function closeDrawer(){
   ui.drawerKind = null;
   ui.drawerCompanyId = null;
   ui.drawerProductId = null;
+  ui.drawerServiceId = null;
   ui.drawerCompetitorId = null;
   ui.drawerEventId = null;
 }
@@ -1455,6 +1474,25 @@ function renderDrawer(){
           <select id="recSolSelect">${DATA.solutions.map(s=>`<option value="${s.id}">${esc(s.name)} — ${esc(s.tag)}</option>`).join('')}</select>
         </div>
         <div class="add-inline"><input id="recWhy" placeholder="Why it fits this account…"><button class="btn btn-sm" id="addRecBtn">${ICONS.plus} Tag</button></div>
+      </div>
+
+      <div class="dsec">
+        <div class="dsec-head"><h4>Services tagged to this account</h4></div>
+        ${(c.recommendedServices||[]).length===0 ? `<div class="empty" style="padding:16px;">${ICONS.empty}<div>Nothing tagged yet.</div></div>` :
+          c.recommendedServices.map((r,i)=>{
+            const svc = serviceById(r.svc);
+            return `<div class="rec-card">
+              <div class="row" style="justify-content:space-between;">
+                <div class="rname" ${svc?`data-open-service="${svc.id}" style="cursor:pointer;"`:''}>${svc?esc(svc.name):'(removed)'}</div>
+                <button class="x" data-del-rec-svc="${i}" style="background:none;border:none;color:var(--teal-strong);cursor:pointer;">${ICONS.x}</button>
+              </div>
+              <div class="rwhy">${esc(r.why)}</div>
+            </div>`;
+          }).join('')}
+        <div class="add-inline">
+          <select id="recSvcSelect">${DATA.services.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select>
+        </div>
+        <div class="add-inline"><input id="recSvcWhy" placeholder="Why it fits this account…"><button class="btn btn-sm" id="addRecSvcBtn">${ICONS.plus} Tag</button></div>
       </div>
 
       <div class="dsec">
@@ -1591,6 +1629,29 @@ function bindDrawer(c){
   }));
   document.querySelectorAll('[data-open-product]').forEach(el=>el.addEventListener('click', ()=>openProductDrawer(el.dataset.openProduct)));
 
+  document.getElementById('addRecSvcBtn').addEventListener('click', async ()=>{
+    const sel = document.getElementById('recSvcSelect');
+    const why = document.getElementById('recSvcWhy');
+    if (!sel.value || !why.value.trim()) return;
+    try{
+      await companiesApi.tagService(c.id, sel.value, why.value.trim());
+      c.recommendedServices = (c.recommendedServices||[]).filter(r=>r.svc!==sel.value);
+      c.recommendedServices.push({svc:sel.value, why:why.value.trim()});
+      logActivity('Tagged a service to an account', `${serviceById(sel.value)?.name||sel.value} → ${c.name}`);
+      openDrawer(c.id); renderView();
+    }catch(e){ toast('Could not tag — ' + (e.message || 'try again')); }
+  });
+  document.querySelectorAll('[data-del-rec-svc]').forEach(b=>b.addEventListener('click', async ()=>{
+    const r = (c.recommendedServices||[])[+b.dataset.delRecSvc];
+    if (!r) return;
+    try{
+      await companiesApi.untagService(c.id, r.svc);
+      c.recommendedServices.splice(+b.dataset.delRecSvc,1);
+      openDrawer(c.id); renderView();
+    }catch(e){ toast('Could not untag — ' + (e.message || 'try again')); }
+  }));
+  document.querySelectorAll('[data-open-service]').forEach(el=>el.addEventListener('click', ()=>openServiceDrawer(el.dataset.openService)));
+
   document.getElementById('addContactInline').addEventListener('click', ()=>openAddContactModal(c.id));
   document.querySelectorAll('[data-edit-contact]').forEach(b=>b.addEventListener('click', ()=>openEditContactModal(b.dataset.editContact)));
   document.querySelectorAll('[data-email-contact]').forEach(b=>b.addEventListener('click', ()=>openEmailModal(b.dataset.emailContact)));
@@ -1648,7 +1709,7 @@ function untaggedCompaniesFor(productId){
   const taggedIds = new Set(taggedCompaniesFor(productId).map(r=>r.company.id));
   return DATA.companies.filter(c=>!taggedIds.has(c.id));
 }
-const STATUS_OPTIONS = ['Active','Pilot','Planned'];
+const STATUS_OPTIONS = ['Active','Pilot','Planned','Pending Review'];
 const KIND_OPTIONS = ['Product','Offer'];
 function statusChipClass(status){
   return status==='Active' ? 'chip-good' : status==='Pilot' ? 'chip-medium' : 'chip-low';
@@ -1679,6 +1740,43 @@ function renderProductDrawer(){
         <div class="add-inline"><input id="pName" value="${esc(p.name)}" placeholder="Product / offer name"></div>
         <div class="add-inline"><input id="pTag" value="${esc(p.tag||'')}" placeholder="Category / tag — e.g. Aerial"></div>
         <div class="small-btn-row"><button class="btn btn-sm btn-primary" id="saveIdentityBtn">Save details</button></div>
+      </div>
+
+      <div class="dsec">
+        <div class="dsec-head"><h4>Store details</h4></div>
+        <div class="add-inline">
+          <select id="pCategory">${DATA.settings.productCategories.map(c=>`<option value="${c.id}" ${p.categoryId===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select>
+        </div>
+        <div class="add-inline"><input id="pVendor" value="${esc(p.vendorName||'')}" placeholder="Vendor / OEM name"></div>
+        <div class="add-inline">
+          <input id="pPriceAmount" type="number" min="0" step="0.01" value="${p.priceAmount==null?'':p.priceAmount}" placeholder="Price">
+          <select id="pPriceCurrency"><option value="NGN" ${p.priceCurrency==='NGN'?'selected':''}>NGN</option><option value="USD" ${p.priceCurrency==='USD'?'selected':''}>USD</option></select>
+        </div>
+        <label class="row" style="gap:6px;align-items:center;font-size:12px;color:var(--muted);margin:6px 0;">
+          <input type="checkbox" id="pOem" ${p.oem?'checked':''}> OEM part (enables the datasheet attachment below)
+        </label>
+        <div class="small-btn-row"><button class="btn btn-sm btn-primary" id="saveStoreDetailsBtn">Save store details</button></div>
+
+        <div id="datasheetRow" style="${p.oem?'':'display:none;'}margin-top:12px;">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">Datasheet (OEM parts only)</div>
+          ${p.datasheetPath
+            ? `<div class="bullet solution"><span style="flex:1;">${esc(p.datasheetPath.split('/').pop())}</span><button class="btn btn-sm btn-ghost" id="viewDatasheetBtn">Open</button><button class="x" id="removeDatasheetBtn">${ICONS.x}</button></div>`
+            : `<input type="file" id="datasheetFile" accept=".pdf,.doc,.docx,.xls,.xlsx">`}
+        </div>
+
+        <div style="margin-top:12px;">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">Images</div>
+          <div class="bullets" id="imgList">
+            ${(p.imagePaths||[]).map((path,i)=>`<div class="bullet solution"><span style="flex:1;">${esc(path.split('/').pop())}</span><button class="btn btn-sm btn-ghost" data-view-img="${esc(path)}">View</button><button class="x" data-del-img="${i}">${ICONS.x}</button></div>`).join('')}
+          </div>
+          <div class="add-inline"><input type="file" id="imageFile" accept="image/*"></div>
+        </div>
+
+        <div class="small-btn-row" style="margin-top:12px;">
+          ${p.archivedAt
+            ? `<button class="btn btn-sm btn-ghost" id="unarchiveProductBtn">Unarchive</button>`
+            : `<button class="btn btn-sm btn-ghost" id="archiveProductBtn">Archive</button>`}
+        </div>
       </div>
 
       <div class="dsec">
@@ -1744,6 +1842,87 @@ function bindProductDrawer(p){
       toast('Details saved'); renderApp(); openProductDrawer(p.id);
     }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
   });
+
+  document.getElementById('pCategory').addEventListener('change', async e=>{
+    const categoryId = e.target.value;
+    try{ await productsApi.setCategory(p.id, categoryId); p.categoryId = categoryId; toast('Category saved'); renderView(); }
+    catch(err){ toast('Could not save — ' + (err.message || 'try again')); }
+  });
+  document.getElementById('pOem').addEventListener('change', async e=>{
+    const oem = e.target.checked;
+    try{ await productsApi.setOem(p.id, oem); p.oem = oem; renderProductDrawer(); }
+    catch(err){ toast('Could not save — ' + (err.message || 'try again')); }
+  });
+  document.getElementById('saveStoreDetailsBtn').addEventListener('click', async ()=>{
+    const vendorName = document.getElementById('pVendor').value.trim();
+    const amountRaw = document.getElementById('pPriceAmount').value;
+    const amount = amountRaw==='' ? null : Number(amountRaw);
+    const currency = document.getElementById('pPriceCurrency').value;
+    try{
+      await productsApi.setVendor(p.id, vendorName);
+      await productsApi.setPrice(p.id, {amount, currency});
+      p.vendorName = vendorName; p.priceAmount = amount; p.priceCurrency = currency;
+      toast('Store details saved'); renderView();
+    }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+  });
+  const datasheetFile = document.getElementById('datasheetFile');
+  if (datasheetFile) datasheetFile.addEventListener('change', async ()=>{
+    const file = datasheetFile.files[0]; if (!file) return;
+    try{
+      const path = await uploadFile(file, `products/${p.id}/datasheet`);
+      await productsApi.setDatasheet(p.id, path);
+      p.datasheetPath = path;
+      renderProductDrawer(); toast('Datasheet uploaded');
+    }catch(e){ toast('Could not upload — ' + (e.message || 'try again')); }
+  });
+  const viewDatasheetBtn = document.getElementById('viewDatasheetBtn');
+  if (viewDatasheetBtn) viewDatasheetBtn.addEventListener('click', async ()=>{
+    const url = await signedUrl(p.datasheetPath);
+    if (url) window.open(url, '_blank'); else toast('Could not open datasheet');
+  });
+  const removeDatasheetBtn = document.getElementById('removeDatasheetBtn');
+  if (removeDatasheetBtn) removeDatasheetBtn.addEventListener('click', async ()=>{
+    try{
+      await productsApi.setDatasheet(p.id, null);
+      await removeFile(p.datasheetPath);
+      p.datasheetPath = ''; renderProductDrawer(); toast('Datasheet removed');
+    }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+  });
+  const imageFile = document.getElementById('imageFile');
+  if (imageFile) imageFile.addEventListener('change', async ()=>{
+    const file = imageFile.files[0]; if (!file) return;
+    try{
+      const path = await uploadFile(file, `products/${p.id}/images`);
+      const next = [...(p.imagePaths||[]), path];
+      await productsApi.setImages(p.id, next);
+      p.imagePaths = next; renderProductDrawer(); toast('Image added');
+    }catch(e){ toast('Could not upload — ' + (e.message || 'try again')); }
+  });
+  document.querySelectorAll('[data-del-img]').forEach(b=>b.addEventListener('click', async ()=>{
+    const i = +b.dataset.delImg;
+    const path = p.imagePaths[i];
+    const next = p.imagePaths.filter((_,idx)=>idx!==i);
+    try{
+      await productsApi.setImages(p.id, next);
+      await removeFile(path);
+      p.imagePaths = next; renderProductDrawer(); toast('Image removed');
+    }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+  }));
+  document.querySelectorAll('[data-view-img]').forEach(b=>b.addEventListener('click', async ()=>{
+    const url = await signedUrl(b.dataset.viewImg);
+    if (url) window.open(url, '_blank'); else toast('Could not open image');
+  }));
+  const archiveProductBtn = document.getElementById('archiveProductBtn');
+  if (archiveProductBtn) archiveProductBtn.addEventListener('click', async ()=>{
+    try{ await productsApi.archive(p.id); p.archivedAt = new Date().toISOString(); renderProductDrawer(); renderView(); toast('Archived'); }
+    catch(e){ toast('Could not archive — ' + (e.message || 'try again')); }
+  });
+  const unarchiveProductBtn = document.getElementById('unarchiveProductBtn');
+  if (unarchiveProductBtn) unarchiveProductBtn.addEventListener('click', async ()=>{
+    try{ await productsApi.unarchive(p.id); p.archivedAt = ''; renderProductDrawer(); renderView(); toast('Unarchived'); }
+    catch(e){ toast('Could not unarchive — ' + (e.message || 'try again')); }
+  });
+
   document.getElementById('deleteProductBtn').addEventListener('click', ()=>{
     openConfirmModal(`Remove ${p.name}? It will also be untagged from every account.`, async ()=>{
       try{
@@ -1798,6 +1977,226 @@ function bindProductDrawer(p){
         co.recommended.push({sol:p.id, why:why.value.trim()});
         logActivity('Tagged a product to an account', `${p.name} → ${co.name}`);
         renderProductDrawer(); renderView(); toast('Tagged to '+co.name);
+      }catch(e){ toast('Could not tag — ' + (e.message || 'try again')); }
+    }
+    else if (co && !why.value.trim()){ toast('Add a short reason first'); }
+  });
+}
+
+/* ============================================================
+   SERVICE DRAWER (V2 HT-B) — mirrors the product drawer above, minus
+   vendor/OEM/datasheet (services aren't OEM parts).
+   ============================================================ */
+function renderServiceDrawer(){
+  const s = serviceById(ui.drawerServiceId);
+  const drawer = document.getElementById('drawer');
+  if (!s){ drawer.innerHTML=''; return; }
+  const tagged = taggedCompaniesForService(s.id);
+  const untagged = untaggedCompaniesForService(s.id);
+  const highlights = s.highlights || [];
+
+  drawer.innerHTML = `
+    <button class="drawer-close" id="drawerCloseBtn">${ICONS.x}</button>
+    <div class="drawer-head">
+      <div class="eyebrow">${esc(categoryName(DATA.settings.serviceCategories, s.categoryId)||'Service')}</div>
+      <h2>${esc(s.name)}</h2>
+      <div class="field-row">
+        <select id="statusSelect">${STATUS_OPTIONS.map(o=>`<option value="${o}" ${(s.status||'Active')===o?'selected':''}>${o}</option>`).join('')}</select>
+        <button class="btn btn-sm btn-ghost" id="deleteServiceBtn" style="color:#f3d9d6;border:1px solid var(--navy-line);">Remove service</button>
+      </div>
+    </div>
+    <div class="drawer-body">
+      <div class="dsec">
+        <div class="dsec-head"><h4>Identity</h4></div>
+        <div class="add-inline"><input id="sName" value="${esc(s.name)}" placeholder="Service name"></div>
+        <div class="small-btn-row"><button class="btn btn-sm btn-primary" id="saveIdentityBtn">Save details</button></div>
+      </div>
+
+      <div class="dsec">
+        <div class="dsec-head"><h4>Store details</h4></div>
+        <div class="add-inline">
+          <select id="sCategory">${DATA.settings.serviceCategories.map(c=>`<option value="${c.id}" ${s.categoryId===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select>
+        </div>
+        <div class="add-inline">
+          <input id="sPriceAmount" type="number" min="0" step="0.01" value="${s.priceAmount==null?'':s.priceAmount}" placeholder="Price">
+          <select id="sPriceCurrency"><option value="NGN" ${s.priceCurrency==='NGN'?'selected':''}>NGN</option><option value="USD" ${s.priceCurrency==='USD'?'selected':''}>USD</option></select>
+        </div>
+        <div class="small-btn-row"><button class="btn btn-sm btn-primary" id="savePriceBtn">Save store details</button></div>
+
+        <div style="margin-top:12px;">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">Images</div>
+          <div class="bullets" id="imgList">
+            ${(s.imagePaths||[]).map((path,i)=>`<div class="bullet solution"><span style="flex:1;">${esc(path.split('/').pop())}</span><button class="btn btn-sm btn-ghost" data-view-img="${esc(path)}">View</button><button class="x" data-del-img="${i}">${ICONS.x}</button></div>`).join('')}
+          </div>
+          <div class="add-inline"><input type="file" id="imageFile" accept="image/*"></div>
+        </div>
+
+        <div class="small-btn-row" style="margin-top:12px;">
+          ${s.archivedAt
+            ? `<button class="btn btn-sm btn-ghost" id="unarchiveServiceBtn">Unarchive</button>`
+            : `<button class="btn btn-sm btn-ghost" id="archiveServiceBtn">Archive</button>`}
+        </div>
+      </div>
+
+      <div class="dsec">
+        <div class="dsec-head"><h4>Description</h4></div>
+        <textarea class="notes-area" id="blurbArea">${esc(s.blurb||'')}</textarea>
+        <div class="small-btn-row"><button class="btn btn-sm btn-primary" id="saveBlurbBtn">Save description</button></div>
+      </div>
+
+      <div class="dsec">
+        <div class="dsec-head"><h4>Highlights & capabilities</h4></div>
+        <div class="bullets" id="hlList">
+          ${highlights.length===0 ? `<div class="empty" style="padding:12px;">${ICONS.empty}<div>No highlights yet.</div></div>` :
+            highlights.map((h,i)=>`<div class="bullet solution"><span>${esc(h)}</span><button class="x" data-del-hl="${i}">${ICONS.x}</button></div>`).join('')}
+        </div>
+        <div class="add-inline"><input id="newHl" placeholder="Add a highlight or capability…"><button class="btn btn-sm" id="addHlBtn">${ICONS.plus}</button></div>
+      </div>
+
+      <div class="dsec">
+        <div class="dsec-head"><h4>Tagged clients (${tagged.length})</h4></div>
+        ${tagged.length===0 ? `<div class="empty" style="padding:16px;">${ICONS.empty}<div>Not tagged to any account yet.</div></div>` :
+          tagged.map(row=>`
+            <div class="rec-card">
+              <div class="row" style="justify-content:space-between;">
+                <div class="rname" data-open-company="${row.company.id}" style="cursor:pointer;">${esc(row.company.name)}</div>
+                <button class="x" data-untag="${row.company.id}" style="background:none;border:none;color:var(--teal-strong);cursor:pointer;">${ICONS.x}</button>
+              </div>
+              <div class="rwhy">${esc(row.why)}</div>
+            </div>
+          `).join('')}
+        ${untagged.length===0 ? '' : `
+        <div class="add-inline">
+          <select id="tagCoSelect">${untagged.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
+        </div>
+        <div class="add-inline"><input id="tagWhy" placeholder="Why it fits this account…"><button class="btn btn-sm" id="addTagBtn">${ICONS.plus} Tag client</button></div>
+        `}
+      </div>
+    </div>
+  `;
+  bindServiceDrawer(s);
+}
+
+function bindServiceDrawer(s){
+  document.getElementById('drawerCloseBtn').addEventListener('click', closeDrawer);
+  document.getElementById('statusSelect').addEventListener('change', async e=>{
+    const status = e.target.value;
+    try{ await servicesApi.setStatus(s.id, status); s.status = status; }
+    catch(err){ toast('Could not save — ' + (err.message || 'try again')); }
+    renderServiceDrawer(); renderView();
+  });
+  document.getElementById('saveIdentityBtn').addEventListener('click', async ()=>{
+    const name = document.getElementById('sName').value.trim();
+    if (!name){ toast('Name required'); return; }
+    try{
+      await servicesApi.editIdentity(s.id, {name});
+      s.name = name;
+      toast('Details saved'); renderApp(); openServiceDrawer(s.id);
+    }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+  });
+  document.getElementById('sCategory').addEventListener('change', async e=>{
+    const categoryId = e.target.value;
+    try{ await servicesApi.setCategory(s.id, categoryId); s.categoryId = categoryId; toast('Category saved'); renderView(); }
+    catch(err){ toast('Could not save — ' + (err.message || 'try again')); }
+  });
+  document.getElementById('savePriceBtn').addEventListener('click', async ()=>{
+    const amountRaw = document.getElementById('sPriceAmount').value;
+    const amount = amountRaw==='' ? null : Number(amountRaw);
+    const currency = document.getElementById('sPriceCurrency').value;
+    try{
+      await servicesApi.setPrice(s.id, {amount, currency});
+      s.priceAmount = amount; s.priceCurrency = currency;
+      toast('Store details saved'); renderView();
+    }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+  });
+  const imageFile = document.getElementById('imageFile');
+  if (imageFile) imageFile.addEventListener('change', async ()=>{
+    const file = imageFile.files[0]; if (!file) return;
+    try{
+      const path = await uploadFile(file, `services/${s.id}/images`);
+      const next = [...(s.imagePaths||[]), path];
+      await servicesApi.setImages(s.id, next);
+      s.imagePaths = next; renderServiceDrawer(); toast('Image added');
+    }catch(e){ toast('Could not upload — ' + (e.message || 'try again')); }
+  });
+  document.querySelectorAll('[data-del-img]').forEach(b=>b.addEventListener('click', async ()=>{
+    const i = +b.dataset.delImg;
+    const path = s.imagePaths[i];
+    const next = s.imagePaths.filter((_,idx)=>idx!==i);
+    try{
+      await servicesApi.setImages(s.id, next);
+      await removeFile(path);
+      s.imagePaths = next; renderServiceDrawer(); toast('Image removed');
+    }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+  }));
+  document.querySelectorAll('[data-view-img]').forEach(b=>b.addEventListener('click', async ()=>{
+    const url = await signedUrl(b.dataset.viewImg);
+    if (url) window.open(url, '_blank'); else toast('Could not open image');
+  }));
+  const archiveServiceBtn = document.getElementById('archiveServiceBtn');
+  if (archiveServiceBtn) archiveServiceBtn.addEventListener('click', async ()=>{
+    try{ await servicesApi.archive(s.id); s.archivedAt = new Date().toISOString(); renderServiceDrawer(); renderView(); toast('Archived'); }
+    catch(e){ toast('Could not archive — ' + (e.message || 'try again')); }
+  });
+  const unarchiveServiceBtn = document.getElementById('unarchiveServiceBtn');
+  if (unarchiveServiceBtn) unarchiveServiceBtn.addEventListener('click', async ()=>{
+    try{ await servicesApi.unarchive(s.id); s.archivedAt = ''; renderServiceDrawer(); renderView(); toast('Unarchived'); }
+    catch(e){ toast('Could not unarchive — ' + (e.message || 'try again')); }
+  });
+  document.getElementById('deleteServiceBtn').addEventListener('click', ()=>{
+    openConfirmModal(`Remove ${s.name}? It will also be untagged from every account.`, async ()=>{
+      try{
+        await servicesApi.remove(s.id);
+        DATA.companies.forEach(c=>{ c.recommendedServices = (c.recommendedServices||[]).filter(r=>r.svc!==s.id); });
+        DATA.services = DATA.services.filter(x=>x.id!==s.id);
+        closeDrawer(); renderApp();
+        toast('Service removed');
+      }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+    });
+  });
+
+  document.getElementById('saveBlurbBtn').addEventListener('click', async ()=>{
+    const blurb = document.getElementById('blurbArea').value;
+    try{ await servicesApi.setBlurb(s.id, blurb); s.blurb = blurb; toast('Description saved'); renderView(); }
+    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+  });
+
+  if (!s.highlights) s.highlights = [];
+  document.getElementById('addHlBtn').addEventListener('click', async ()=>{
+    const inp = document.getElementById('newHl');
+    if (!inp.value.trim()) return;
+    const next = [...s.highlights, inp.value.trim()];
+    try{ await servicesApi.setHighlights(s.id, next); s.highlights = next; renderServiceDrawer(); }
+    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+  });
+  document.querySelectorAll('[data-del-hl]').forEach(b=>b.addEventListener('click', async ()=>{
+    const next = s.highlights.filter((_,i)=>i!==+b.dataset.delHl);
+    try{ await servicesApi.setHighlights(s.id, next); s.highlights = next; renderServiceDrawer(); }
+    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+  }));
+
+  document.querySelectorAll('[data-open-company]').forEach(el=>el.addEventListener('click', ()=>openDrawer(el.dataset.openCompany)));
+  document.querySelectorAll('[data-untag]').forEach(b=>b.addEventListener('click', async ()=>{
+    const co = companyById(b.dataset.untag);
+    if (!co) return;
+    try{
+      await companiesApi.untagService(co.id, s.id);
+      co.recommendedServices = (co.recommendedServices||[]).filter(r=>r.svc!==s.id);
+      renderServiceDrawer(); renderView();
+    }catch(e){ toast('Could not untag — ' + (e.message || 'try again')); }
+  }));
+  const addTagBtn = document.getElementById('addTagBtn');
+  if (addTagBtn) addTagBtn.addEventListener('click', async ()=>{
+    const sel = document.getElementById('tagCoSelect');
+    const why = document.getElementById('tagWhy');
+    const co = companyById(sel.value);
+    if (co && why.value.trim()){
+      try{
+        await companiesApi.tagService(co.id, s.id, why.value.trim());
+        co.recommendedServices = (co.recommendedServices||[]).filter(r=>r.svc!==s.id);
+        co.recommendedServices.push({svc:s.id, why:why.value.trim()});
+        logActivity('Tagged a service to an account', `${s.name} → ${co.name}`);
+        renderServiceDrawer(); renderView(); toast('Tagged to '+co.name);
       }catch(e){ toast('Could not tag — ' + (e.message || 'try again')); }
     }
     else if (co && !why.value.trim()){ toast('Add a short reason first'); }
@@ -3505,16 +3904,52 @@ function bindTasksControls(){
 }
 
 /* ============================================================
-   SOLUTIONS VIEW
+   STORE VIEW (V2 HT-B) — Product / Service sub-tabs over the same catalog
+   this used to be the single "Products & Offers" view. Card grid + bulk/
+   single upload here; the dashboard/card-vs-list toggle/bulk actions from
+   PRD-v2 §3 are HT-C, not this task.
    ============================================================ */
+function taggedCompaniesForService(serviceId){
+  const rows = [];
+  DATA.companies.forEach(c=>{
+    (c.recommendedServices||[]).forEach((r,i)=>{ if (r.svc===serviceId) rows.push({company:c, why:r.why, index:i}); });
+  });
+  return rows;
+}
+function untaggedCompaniesForService(serviceId){
+  const taggedIds = new Set(taggedCompaniesForService(serviceId).map(r=>r.company.id));
+  return DATA.companies.filter(c=>!taggedIds.has(c.id));
+}
 function filteredSolutions(){
   const q = ui.search.trim().toLowerCase();
-  if (!q) return DATA.solutions;
-  return DATA.solutions.filter(s=>
+  const base = DATA.solutions.filter(s=>ui.storeShowArchived ? true : !s.archivedAt);
+  if (!q) return base;
+  return base.filter(s=>
     s.name.toLowerCase().includes(q) || (s.tag||'').toLowerCase().includes(q) || (s.blurb||'').toLowerCase().includes(q)
   );
 }
+function filteredServices(){
+  const q = ui.search.trim().toLowerCase();
+  const base = DATA.services.filter(s=>ui.storeShowArchived ? true : !s.archivedAt);
+  if (!q) return base;
+  return base.filter(s=> s.name.toLowerCase().includes(q) || (s.blurb||'').toLowerCase().includes(q));
+}
+function categoryName(list, id){ const c = list.find(x=>x.id===id); return c ? c.name : ''; }
 function renderSolutions(){
+  return `
+    <div class="toolbar">
+      <div class="seg">
+        <button data-store-tab="products" class="${ui.storeTab==='products'?'active':''}">Products</button>
+        <button data-store-tab="services" class="${ui.storeTab==='services'?'active':''}">Services</button>
+      </div>
+      <label class="row" style="gap:6px;align-items:center;font-size:11.5px;color:var(--muted);margin-left:12px;">
+        <input type="checkbox" id="storeShowArchived" ${ui.storeShowArchived?'checked':''}> Show archived
+      </label>
+    </div>
+    ${ui.storeTab==='services' ? renderServicesGrid() : renderProductsGrid()}
+  `;
+}
+function renderProductsGrid(){
   const list = filteredSolutions();
   if (!list.length) return `<div class="empty">${ICONS.empty}<div>No products match.</div></div>`;
   return `<div class="sol-grid">
@@ -3522,13 +3957,36 @@ function renderSolutions(){
       const tagged = taggedCompaniesFor(s.id);
       const hl = (s.highlights||[]).slice(0,2);
       return `
-      <div class="card sol-card" data-open-product="${s.id}" style="cursor:pointer;">
+      <div class="card sol-card" data-open-product="${s.id}" style="cursor:pointer;${s.archivedAt?'opacity:.55;':''}">
         <div class="row" style="justify-content:space-between;margin-bottom:8px;">
-          <span class="chip chip-teal">${esc(s.tag||'General')}</span>
+          <span class="chip chip-teal">${esc(s.tag||categoryName(DATA.settings.productCategories, s.categoryId)||'General')}</span>
+          <span class="chip ${statusChipClass(s.status||'Active')}">${esc(s.status||'Active')}</span>
+        </div>
+        <h3>${esc(s.name)}${s.oem?' <span class="chip chip-gold" style="font-size:9px;">OEM</span>':''}</h3>
+        <p>${esc(s.blurb||'')}</p>
+        ${s.priceAmount!=null ? `<div class="sub" style="margin-bottom:6px;">${esc(s.priceCurrency)} ${s.priceAmount.toLocaleString()}</div>` : ''}
+        ${hl.length ? `<div class="bullets" style="margin-bottom:10px;">${hl.map(h=>`<div class="bullet solution" style="font-size:11.5px;padding:6px 8px;">${esc(h)}</div>`).join('')}</div>` : ''}
+        <div class="adopters">Tagged to: ${tagged.length?tagged.map(t=>esc(t.company.name)).join(', '):'no accounts yet'}</div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+function renderServicesGrid(){
+  const list = filteredServices();
+  if (!list.length) return `<div class="empty">${ICONS.empty}<div>No services match.</div></div>`;
+  return `<div class="sol-grid">
+    ${list.map(s=>{
+      const tagged = taggedCompaniesForService(s.id);
+      const hl = (s.highlights||[]).slice(0,2);
+      return `
+      <div class="card sol-card" data-open-service="${s.id}" style="cursor:pointer;${s.archivedAt?'opacity:.55;':''}">
+        <div class="row" style="justify-content:space-between;margin-bottom:8px;">
+          <span class="chip chip-teal">${esc(categoryName(DATA.settings.serviceCategories, s.categoryId)||'General')}</span>
           <span class="chip ${statusChipClass(s.status||'Active')}">${esc(s.status||'Active')}</span>
         </div>
         <h3>${esc(s.name)}</h3>
         <p>${esc(s.blurb||'')}</p>
+        ${s.priceAmount!=null ? `<div class="sub" style="margin-bottom:6px;">${esc(s.priceCurrency)} ${s.priceAmount.toLocaleString()}</div>` : ''}
         ${hl.length ? `<div class="bullets" style="margin-bottom:10px;">${hl.map(h=>`<div class="bullet solution" style="font-size:11.5px;padding:6px 8px;">${esc(h)}</div>`).join('')}</div>` : ''}
         <div class="adopters">Tagged to: ${tagged.length?tagged.map(t=>esc(t.company.name)).join(', '):'no accounts yet'}</div>
       </div>`;
@@ -3536,8 +3994,14 @@ function renderSolutions(){
   </div>`;
 }
 function bindSolutionsControls(){
+  document.querySelectorAll('[data-store-tab]').forEach(b=>b.addEventListener('click', ()=>{ ui.storeTab=b.dataset.storeTab; ui.search=''; renderApp(); }));
+  const archived = document.getElementById('storeShowArchived');
+  if (archived) archived.addEventListener('change', e=>{ ui.storeShowArchived = e.target.checked; renderView(); });
   document.querySelectorAll('[data-open-product]').forEach(el=>{
     el.addEventListener('click', ()=>openProductDrawer(el.dataset.openProduct));
+  });
+  document.querySelectorAll('[data-open-service]').forEach(el=>{
+    el.addEventListener('click', ()=>openServiceDrawer(el.dataset.openService));
   });
 }
 
@@ -3795,12 +4259,17 @@ function openAddTaskModal(companyId){
 
 function openAddSolutionModal(){
   const companyOptions = DATA.companies.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  const categoryOptions = DATA.settings.productCategories.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
   openModal(`
     <h3>New product / offer</h3>
     <div class="field"><label>Name</label><input id="mName" placeholder="e.g. Flare-Stack Thermal Survey"></div>
-    <div class="field"><label>Category / tag</label><input id="mTag" placeholder="e.g. Aerial, Subsea, Data…"></div>
+    <div class="field"><label>Category (Store)</label><select id="mCategory">${categoryOptions}</select></div>
+    <div class="field"><label>Tag / display label</label><input id="mTag" placeholder="e.g. Aerial, Subsea, Data…"></div>
     <div class="field"><label>Kind</label><select id="mKind">${KIND_OPTIONS.map(k=>`<option value="${k}">${k}</option>`).join('')}</select></div>
-    <div class="field"><label>Status</label><select id="mStatus">${STATUS_OPTIONS.map(s=>`<option value="${s}">${s}</option>`).join('')}</select></div>
+    <div class="field"><label>Status</label><select id="mStatus">${STATUS_OPTIONS.filter(s=>s!=='Pending Review').map(s=>`<option value="${s}">${s}</option>`).join('')}</select></div>
+    <div class="field"><label>Vendor / OEM name (optional)</label><input id="mVendor"></div>
+    <div class="field"><label><input type="checkbox" id="mOem"> OEM part</label></div>
+    <div class="field"><label>Price (optional)</label><div class="row" style="gap:6px;"><input id="mPriceAmount" type="number" min="0" step="0.01" style="flex:1;"><select id="mPriceCurrency"><option value="NGN">NGN</option><option value="USD">USD</option></select></div></div>
     <div class="field"><label>Description</label><textarea id="mBlurb" placeholder="What it is and who it's for…"></textarea></div>
     <div class="field"><label>Tag to a client now (optional)</label><select id="mCo"><option value="">— none yet —</option>${companyOptions}</select></div>
     <div class="modal-actions">
@@ -3812,9 +4281,13 @@ function openAddSolutionModal(){
     body.querySelector('#mSave').onclick = async ()=>{
       const name = body.querySelector('#mName').value.trim();
       if (!name){ toast('Name required'); return; }
+      const amountRaw = body.querySelector('#mPriceAmount').value;
       const product = {
         id: crypto.randomUUID(), name, tag: body.querySelector('#mTag').value.trim()||'General',
+        categoryId: body.querySelector('#mCategory').value,
         kind: body.querySelector('#mKind').value, status: body.querySelector('#mStatus').value,
+        vendorName: body.querySelector('#mVendor').value.trim(), oem: body.querySelector('#mOem').checked,
+        priceAmount: amountRaw===''?null:Number(amountRaw), priceCurrency: body.querySelector('#mPriceCurrency').value,
         blurb: body.querySelector('#mBlurb').value.trim(), highlights:[],
       };
       const coId = body.querySelector('#mCo').value;
@@ -3832,6 +4305,143 @@ function openAddSolutionModal(){
         }
         closeModal(); renderApp(); toast('Product added');
       }catch(e){ toast('Could not add — ' + (e.message || 'try again')); save.disabled = false; }
+    };
+  });
+}
+
+function openAddServiceModal(){
+  const companyOptions = DATA.companies.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  const categoryOptions = DATA.settings.serviceCategories.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  openModal(`
+    <h3>New service</h3>
+    <div class="field"><label>Name</label><input id="mName" placeholder="e.g. Crawler UT Survey"></div>
+    <div class="field"><label>Category (Store)</label><select id="mCategory">${categoryOptions}</select></div>
+    <div class="field"><label>Status</label><select id="mStatus">${STATUS_OPTIONS.filter(s=>s!=='Pending Review').map(s=>`<option value="${s}">${s}</option>`).join('')}</select></div>
+    <div class="field"><label>Price (optional)</label><div class="row" style="gap:6px;"><input id="mPriceAmount" type="number" min="0" step="0.01" style="flex:1;"><select id="mPriceCurrency"><option value="NGN">NGN</option><option value="USD">USD</option></select></div></div>
+    <div class="field"><label>Description</label><textarea id="mBlurb" placeholder="What it is and who it's for…"></textarea></div>
+    <div class="field"><label>Tag to a client now (optional)</label><select id="mCo"><option value="">— none yet —</option>${companyOptions}</select></div>
+    <div class="modal-actions">
+      <button class="btn" id="mCancel">Cancel</button>
+      <button class="btn btn-primary" id="mSave">Add service</button>
+    </div>
+  `, body=>{
+    body.querySelector('#mCancel').onclick = closeModal;
+    body.querySelector('#mSave').onclick = async ()=>{
+      const name = body.querySelector('#mName').value.trim();
+      if (!name){ toast('Name required'); return; }
+      const amountRaw = body.querySelector('#mPriceAmount').value;
+      const service = {
+        id: crypto.randomUUID(), name,
+        categoryId: body.querySelector('#mCategory').value,
+        status: body.querySelector('#mStatus').value,
+        priceAmount: amountRaw===''?null:Number(amountRaw), priceCurrency: body.querySelector('#mPriceCurrency').value,
+        blurb: body.querySelector('#mBlurb').value.trim(), highlights:[],
+      };
+      const coId = body.querySelector('#mCo').value;
+      const save = body.querySelector('#mSave'); save.disabled = true;
+      try{
+        const saved = await servicesApi.create(service);
+        DATA.services.push(saved);
+        if (coId){
+          const co = companyById(coId);
+          if (co){
+            await companiesApi.tagService(co.id, saved.id, 'Tagged at creation');
+            co.recommendedServices = (co.recommendedServices||[]).filter(r=>r.svc!==saved.id);
+            co.recommendedServices.push({svc: saved.id, why: 'Tagged at creation'});
+          }
+        }
+        closeModal(); renderApp(); toast('Service added');
+      }catch(e){ toast('Could not add — ' + (e.message || 'try again')); save.disabled = false; }
+    };
+  });
+}
+
+// Bulk upload (CSV only — see src/csv.js for why). Shared by products and
+// services: kind is 'product' | 'service'. Expected header row: name,
+// category, blurb, price, currency, and — products only — vendor, oem.
+// `category` is matched case-insensitively against the Store's controlled
+// taxonomy (PRD-v2 §Phase 0); a row whose category doesn't resolve is
+// flagged, not guessed at.
+function openBulkUploadModal(kind){
+  const categories = kind==='service' ? DATA.settings.serviceCategories : DATA.settings.productCategories;
+  const nounPlural = kind==='service' ? 'services' : 'products';
+  openModal(`
+    <h3>Bulk upload ${nounPlural}</h3>
+    <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">
+      CSV only — export/save your Excel sheet as .csv first. Header row required: <code>name, category, blurb, price, currency${kind==='product'?', vendor, oem':''}</code>.
+      Every row lands as <b>Pending Review</b> — adjust status per item afterwards.
+    </p>
+    <div class="field"><input type="file" id="mFile" accept=".csv,text/csv"></div>
+    <div id="mPreview"></div>
+    <div class="modal-actions">
+      <button class="btn" id="mCancel">Cancel</button>
+      <button class="btn btn-primary" id="mSave" disabled>Import 0 rows</button>
+    </div>
+  `, body=>{
+    let parsed = [];
+    body.querySelector('#mCancel').onclick = closeModal;
+    const saveBtn = body.querySelector('#mSave');
+    const preview = body.querySelector('#mPreview');
+
+    body.querySelector('#mFile').addEventListener('change', async e=>{
+      const file = e.target.files[0]; if (!file) return;
+      const text = await file.text();
+      const rows = csvToObjects(text);
+      parsed = rows.map(r=>{
+        const name = (r.name||'').trim();
+        const categoryNameRaw = (r.category||'').trim();
+        const category = categories.find(c=>c.name.toLowerCase()===categoryNameRaw.toLowerCase());
+        const errors = [];
+        if (!name) errors.push('missing name');
+        if (!category) errors.push(`unknown category "${categoryNameRaw}"`);
+        const priceAmount = r.price ? Number(r.price) : null;
+        if (r.price && Number.isNaN(priceAmount)) errors.push('invalid price');
+        return {
+          name, categoryId: category ? category.id : '',
+          blurb: (r.blurb||'').trim(),
+          priceAmount: Number.isNaN(priceAmount) ? null : priceAmount,
+          priceCurrency: (r.currency||'NGN').trim().toUpperCase()==='USD' ? 'USD' : 'NGN',
+          vendorName: (r.vendor||'').trim(),
+          oem: /^(yes|true|1)$/i.test((r.oem||'').trim()),
+          highlights: [],
+          errors,
+        };
+      });
+      const valid = parsed.filter(r=>r.errors.length===0);
+      saveBtn.disabled = valid.length===0;
+      saveBtn.textContent = `Import ${valid.length} row${valid.length===1?'':'s'}`;
+      preview.innerHTML = `
+        <div class="tablewrap" style="max-height:240px;overflow-y:auto;margin-top:10px;">
+          <table>
+            <thead><tr><th>Name</th><th>Category</th><th>Price</th><th>Status</th></tr></thead>
+            <tbody>
+              ${parsed.map(r=>`<tr>
+                <td>${esc(r.name||'—')}</td>
+                <td>${esc(categoryName(categories, r.categoryId)||'—')}</td>
+                <td>${r.priceAmount!=null?esc(r.priceCurrency+' '+r.priceAmount):'—'}</td>
+                <td>${r.errors.length ? `<span class="chip chip-high">${esc(r.errors.join('; '))}</span>` : `<span class="chip chip-good">ok</span>`}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div class="sub" style="margin-top:6px;">${parsed.length} row${parsed.length===1?'':'s'} parsed, ${valid.length} valid.</div>
+      `;
+    });
+
+    saveBtn.onclick = async ()=>{
+      const valid = parsed.filter(r=>r.errors.length===0).map(({errors, ...r})=>r);
+      if (!valid.length) return;
+      saveBtn.disabled = true;
+      try{
+        if (kind==='service'){
+          const saved = await servicesApi.bulkCreate(valid);
+          DATA.services.push(...saved);
+        } else {
+          const saved = await productsApi.bulkCreate(valid);
+          DATA.solutions.push(...saved);
+        }
+        closeModal(); renderApp(); toast(`${valid.length} ${nounPlural} imported as Pending Review`);
+      }catch(e){ toast('Could not import — ' + (e.message || 'try again')); saveBtn.disabled = false; }
     };
   });
 }

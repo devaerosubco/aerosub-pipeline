@@ -5,6 +5,7 @@ import {
   productFromRow, productToRow, taskFromRow, competitorFromRow, competitorToRow, campaignFromRow, campaignToRow,
   newsFromRow, newsToRow, researchFromRow, eventFromRow, eventToRow, attendeeFromRow, attendeeToRow,
   connectorFromRow, activityFromRow, categoryFromRow,
+  serviceFromRow, serviceToRow, companyServiceFromRow,
 } from './store.js';
 
 describe('companies', () => {
@@ -95,6 +96,55 @@ describe('products', () => {
     expect(row.kind).toBe('Product');
     expect(row.status).toBe('Active');
     expect(row.highlights).toEqual([]);
+  });
+
+  it('round-trips the V2 HT-B Store fields (category, vendor, price, oem, paths)', () => {
+    const app = {
+      name: 'ROV Kit', categoryId: 'rov-systems', vendorName: 'Acme ROV Co',
+      datasheetPath: 'products/x/datasheet/abc.pdf', imagePaths: ['products/x/images/1.jpg'],
+      priceAmount: 25000, priceCurrency: 'USD', oem: true,
+    };
+    const row = productToRow(app);
+    expect(row.category_id).toBe('rov-systems');
+    expect(row.oem).toBe(true);
+    expect(row.price_amount).toBe(25000);
+    const back = productFromRow({ id: 'p1', ...row });
+    expect(back.categoryId).toBe(app.categoryId);
+    expect(back.vendorName).toBe(app.vendorName);
+    expect(back.datasheetPath).toBe(app.datasheetPath);
+    expect(back.imagePaths).toEqual(app.imagePaths);
+    expect(back.priceAmount).toBe(25000);
+    expect(back.oem).toBe(true);
+  });
+
+  it('productFromRow treats a null price as null, not 0, and defaults oem/paths', () => {
+    const p = productFromRow({ id: 'p2', name: 'X', price_amount: null, image_paths: null });
+    expect(p.priceAmount).toBeNull();
+    expect(p.oem).toBe(false);
+    expect(p.imagePaths).toEqual([]);
+  });
+});
+
+describe('services (V2 HT-B)', () => {
+  it('round-trips through serviceToRow -> serviceFromRow', () => {
+    const app = {
+      name: 'Crawler UT Survey', categoryId: 'crawler-ut-manual-ndt', status: 'Pilot',
+      blurb: 'b', highlights: ['h1'], priceAmount: 5000, priceCurrency: 'NGN', imagePaths: ['services/x/1.jpg'],
+    };
+    const row = serviceToRow(app);
+    expect(row.category_id).toBe(app.categoryId);
+    const back = serviceFromRow({ id: 's1', ...row });
+    expect(back.name).toBe(app.name);
+    expect(back.categoryId).toBe(app.categoryId);
+    expect(back.status).toBe('Pilot');
+    expect(back.priceAmount).toBe(5000);
+    expect(back.imagePaths).toEqual(app.imagePaths);
+  });
+
+  it('maps company_services -> {svc, why} (the "recommendedServices" shape)', () => {
+    const r = companyServiceFromRow({ id: 'cs1', company_id: 'c1', service_id: 's1', rationale: 'fits well' });
+    expect(r.svc).toBe('s1');
+    expect(r.why).toBe('fits well');
   });
 });
 

@@ -34,3 +34,43 @@ export async function setHighlights(id, highlights) {
 export async function remove(id) {
   await write('products', 'delete', { match: { id } }); // company_products cascade in the DB
 }
+
+// --- V2 HT-B: Store catalog fields ----------------------------------------
+export async function setCategory(id, categoryId) {
+  await write('products', 'update', { row: { category_id: categoryId }, match: { id } });
+}
+export async function setVendor(id, vendorName) {
+  await write('products', 'update', { row: { vendor_name: vendorName || null }, match: { id } });
+}
+export async function setPrice(id, { amount, currency }) {
+  await write('products', 'update', { row: { price_amount: amount ?? null, price_currency: currency || 'NGN' }, match: { id } });
+}
+export async function setOem(id, oem) {
+  await write('products', 'update', { row: { oem: !!oem }, match: { id } });
+}
+export async function setDatasheet(id, datasheetPath) {
+  await write('products', 'update', { row: { datasheet_path: datasheetPath || null }, match: { id } });
+}
+export async function setImages(id, imagePaths) {
+  await write('products', 'update', { row: { image_paths: imagePaths }, match: { id } });
+}
+export async function archive(id) {
+  await write('products', 'update', { row: { archived_at: new Date().toISOString() }, match: { id } });
+}
+export async function unarchive(id) {
+  await write('products', 'update', { row: { archived_at: null }, match: { id } });
+}
+// search_count / added_to_quote_count are wired up in HT-C (the Store
+// dashboard that actually reads them) — an atomic increment needs an RPC,
+// not a read-then-write from the client, so it isn't stubbed out here.
+
+// Bulk upload (CSV/XLSX, item 1a) — every row lands as 'Pending Review';
+// status is adjusted afterwards from the catalog UI. Rows without a name or
+// a resolvable category are skipped by the caller before this is called.
+export async function bulkCreate(rows) {
+  const payload = rows.map(r => ({
+    id: crypto.randomUUID(), ...productToRow({ ...r, status: 'Pending Review' }),
+  }));
+  const saved = await write('products', 'insert', { row: payload }, { many: true });
+  return saved.map(productFromRow);
+}

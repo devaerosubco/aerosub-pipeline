@@ -101,35 +101,55 @@ gained category + sector round-trip tests.
 
 ---
 
-## 2. Phase 1 — STORE tab: product/service catalog + bulk & single upload (queued)
+## 2. Phase 1 — STORE tab: product/service catalog + bulk & single upload (HT-B, shipped)
 
-Restructures the existing "Products & Offers" tab into a `STORE` parent tab
-with Product / Service sub-views (no sub-tab precedent exists in the app today
-— see `NAV` array, `src/main.js`; modeled on the Companies board/table `.seg`
-toggle for the switching mechanic).
+Restructured the existing "Products & Offers" tab into a `STORE` label with
+Product / Service sub-tabs *inside the same `ui.view==='solutions'` view* —
+deliberately kept the internal view id, `data-open-product`, `solutionById`,
+`DATA.solutions`, news/report references to products, etc. **unchanged**,
+since renaming them across dozens of call sites would have been pure churn
+for zero user-facing benefit and meaningful regression risk to already-tested
+code. Modeled the Products/Services toggle on the Companies board/table
+`.seg` pattern (`ui.storeTab`, mirroring `ui.companyLayout`).
 
-- Extends the existing `products` table: `category_id` (FK
-  `product_categories`), `vendor_name`, `datasheet_url`, `image_urls text[]`,
-  `price_amount numeric`, `price_currency text default 'NGN'`, `oem boolean
-  default false`, `archived_at`, `search_count int default 0`,
-  `added_to_quote_count int default 0`.
-- New `services` table, same shape minus `vendor_name`/`datasheet_url`/`oem`
-  (services aren't OEM parts), plus a `company_services` tagging table
-  mirroring `company_products` (PRD §6.8).
-- **Bulk upload**: CSV/XLSX (client-side parse, SheetJS via CDN) → preview/
-  validate → bulk insert via `write(table, 'insert', {row: rows}, {many:
-  true})` (already used for the extension's clip import, `researchApi.
-  importClips`). Bulk-uploaded rows land `status = 'pending_review'` — "status
-  can be updated later" (item 1a).
-- **Single upload**: same form; `datasheet_url` only shown/required when a
-  product has `oem = true` (not services, not non-OEM products) — first use of
-  Supabase Storage in this project (no bucket exists yet).
-- Every product and every service must have a `category_id` from the Phase 0
-  taxonomies — enforced client-side (the picker only offers seeded/admin-added
-  categories) since a `not null` FK CHECK at the DB level would break the
-  existing 6 seeded `products` rows that predate this column; decide at build
-  time whether to backfill them into a category or leave `category_id`
-  nullable with a client-required prompt.
+- Extended `products`: `category_id` (FK `product_categories`, **not null**
+  — backfilled for the 6 pre-existing seeded rows since the category ids were
+  deliberately chosen to match them 1:1 in Phase 0), `vendor_name`,
+  `datasheet_path`, `image_paths text[]`, `price_amount`, `price_currency`
+  (NGN/USD, manual entry — no live FX), `oem`, `archived_at`, `search_count`,
+  `added_to_quote_count` (the last two are columns only — HT-C's dashboard is
+  what actually increments/reads them; an atomic increment needs an RPC, not
+  a client read-then-write, so nothing here half-implements one). `status`
+  CHECK widened to add `'Pending Review'`.
+- New `services` table, same shape minus vendor/datasheet/oem (services
+  aren't OEM parts), plus `company_services` mirroring `company_products`
+  (PRD §6.8) — and a "Services tagged to this account" section in the company
+  drawer mirroring the existing products one, for symmetry.
+- **Storage refinement vs. the original wording above**: the DB stores the
+  object **path**, not a URL (`datasheet_path`, `image_paths`), because the
+  bucket is private and a stored URL would go stale the moment a signed URL
+  expired. `src/storage.js` signs a fresh URL on demand when something is
+  opened. This keeps the members-only decision from §0 intact — a public
+  bucket would have quietly reintroduced the no-login access that was
+  explicitly deferred.
+- **Bulk upload is CSV-only, not CSV/XLSX** — a deviation from this section's
+  original wording. The npm `xlsx` (SheetJS) package has two unpatched
+  high-severity advisories (prototype pollution + ReDoS, "no fix available"),
+  which matter specifically here because this parses untrusted, user-uploaded
+  files. The maintained alternative, `exceljs`, pulls in ~100 Node-oriented
+  packages (archiver, tmp, unzipper…) for what a small browser app doesn't
+  need. Went with a small hand-rolled CSV parser (`src/csv.js`, unit-tested)
+  instead — zero new attack surface, zero bundle weight. The bulk-upload
+  modal tells users to Save As / Export as CSV from Excel or Sheets first.
+  Expected header row: `name, category, blurb, price, currency` (+ `vendor,
+  oem` for products). `category` is matched case-insensitively against the
+  Phase-0 taxonomy; an unresolved category flags that row rather than
+  guessing. Every imported row lands `status = 'Pending Review'` — "status can
+  be updated later" (item 1a) — via `write(table, 'insert', {row: rows},
+  {many: true})`, the same bulk-insert op the extension's `researchApi.
+  importClips` already uses.
+- **Single upload**: the product drawer's datasheet field only shows when
+  `oem = true` (not services, not non-OEM products).
 
 ## 3. Phase 2 — Store dashboard, card/list, bulk actions, member sharing (queued)
 

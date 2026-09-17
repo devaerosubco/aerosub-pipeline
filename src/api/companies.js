@@ -58,3 +58,15 @@ export async function tagProduct(companyId, productId, why) {
 export async function untagProduct(companyId, productId) {
   await write('company_products', 'delete', { match: { company_id: companyId, product_id: productId } });
 }
+
+// Same pattern, for services (V2 HT-B).
+export async function tagService(companyId, serviceId, why) {
+  await write('company_services', 'upsert', {
+    row: { company_id: companyId, service_id: serviceId, rationale: why || null },
+    onConflict: 'company_id,service_id',
+  });
+}
+
+export async function untagService(companyId, serviceId) {
+  await write('company_services', 'delete', { match: { company_id: companyId, service_id: serviceId } });
+}

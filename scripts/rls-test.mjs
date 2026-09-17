@@ -19,7 +19,7 @@ const ALL_TABLES = [
   'contacts', 'products', 'company_products', 'competitors', 'competitor_campaigns',
   'tasks', 'research_clips', 'events', 'event_attendees', 'news_items',
   'connectors', 'activity_log', 'app_settings',
-  'product_categories', 'service_categories',
+  'product_categories', 'service_categories', 'services', 'company_services',
 ];
 
 let pass = 0, fail = 0;
@@ -76,7 +76,8 @@ const memberB = await makeMember('Member B');
 // --- member: full CRUD on the 15 flat tables ------------------------------
 const FLAT = ['companies', 'company_flags', 'contacts', 'products', 'company_products',
   'competitors', 'competitor_campaigns', 'tasks', 'research_clips', 'events',
-  'event_attendees', 'news_items', 'connectors', 'app_settings', 'invites'];
+  'event_attendees', 'news_items', 'connectors', 'app_settings', 'invites',
+  'services', 'company_services'];
 {
   let readOk = 0;
   for (const t of FLAT) {
@@ -92,6 +93,45 @@ const FLAT = ['companies', 'company_flags', 'contacts', 'products', 'company_pro
   ok(!updC.error, 'member can update any company (flat model, no per-row owner)');
   const delC = await memberA.client.from('companies').delete().eq('id', cid);
   ok(!delC.error, 'member can delete a company');
+}
+
+// --- services (V2 HT-B): flat member CRUD, same as products --------------
+{
+  const sid = 'rls-svc-' + Date.now();
+  const insS = await memberA.client.from('services').insert({ id: sid, name: 'RLS test service', category_id: 'other' });
+  ok(!insS.error, 'member can insert a service');
+  const updS = await memberA.client.from('services').update({ status: 'Pilot' }).eq('id', sid);
+  ok(!updS.error, 'member can update any service (flat model)');
+
+  const cid2 = 'rls-co2-' + Date.now();
+  await memberA.client.from('companies').insert({ id: cid2, name: 'RLS test co 2', priority: 'low', stage: 'research' });
+  const insCs = await memberA.client.from('company_services').insert({ id: crypto.randomUUID(), company_id: cid2, service_id: sid });
+  ok(!insCs.error, 'member can tag a service to a company (company_services)');
+
+  await memberA.client.from('company_services').delete().eq('company_id', cid2).eq('service_id', sid);
+  await memberA.client.from('companies').delete().eq('id', cid2);
+  const delS = await memberA.client.from('services').delete().eq('id', sid);
+  ok(!delS.error, 'member can delete a service');
+}
+
+// --- storage (V2 HT-B): store-attachments is member-only, anon denied ----
+{
+  const path = `rls-test/${Date.now()}.txt`;
+  const blob = new Blob(['rls test'], { type: 'text/plain' });
+
+  const anonUpload = await anon.storage.from('store-attachments').upload(path, blob);
+  ok(!!anonUpload.error, 'anon CANNOT upload to store-attachments');
+
+  const memberUpload = await memberA.client.storage.from('store-attachments').upload(path, blob);
+  ok(!memberUpload.error, 'member can upload to store-attachments');
+
+  const anonRead = await anon.storage.from('store-attachments').download(path);
+  ok(!!anonRead.error, 'anon CANNOT read a store-attachments object');
+
+  const memberRead = await memberA.client.storage.from('store-attachments').download(path);
+  ok(!memberRead.error, 'member can read a store-attachments object');
+
+  await memberA.client.storage.from('store-attachments').remove([path]);
 }
 
 // --- profiles: read all, update ONLY your own row, id/email locked --------

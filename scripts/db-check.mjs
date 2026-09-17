@@ -13,7 +13,7 @@ const ok = (c, l) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${l}`); c ? pass++ :
 const rls = psql(`select c.relname, c.relrowsecurity, c.relforcerowsecurity
   from pg_class c join pg_namespace n on n.oid=c.relnamespace
   where n.nspname='public' and c.relkind='r' order by 1;`).split('\n');
-ok(rls.length === 20, `20 public tables (got ${rls.length})`);
+ok(rls.length === 22, `22 public tables (got ${rls.length})`);
 for (const row of rls) {
   const [t, en, fo] = row.split('\t');
   ok(en === 't' && fo === 't', `${t}: RLS enabled+forced`);
@@ -21,7 +21,7 @@ for (const row of rls) {
 
 // 2. policy count
 const pol = Number(psql(`select count(*) from pg_policies where schemaname='public';`));
-ok(pol === 75, `75 policies (got ${pol})`);
+ok(pol === 83, `83 policies (got ${pol})`);
 
 // 3. seed row counts
 const want = {
@@ -29,6 +29,7 @@ const want = {
   competitors: 10, competitor_campaigns: 11, tasks: 12, news_items: 6, events: 6,
   event_attendees: 10, connectors: 3, app_settings: 1,
   product_categories: 7, service_categories: 6,
+  services: 0, company_services: 0,
   profiles: 0, invites: 0, activity_log: 0, company_stage_changes: 0, research_clips: 0,
 };
 for (const [t, n] of Object.entries(want)) {
@@ -47,6 +48,14 @@ for (const t of ['activity_log', 'company_stage_changes']) {
 const trg = psql(`select tgname from pg_trigger t join pg_class c on c.oid=t.tgrelid
   join pg_namespace n on n.oid=c.relnamespace where n.nspname='auth' and c.relname='users' and not t.tgisinternal;`).split('\n');
 ok(trg.includes('on_auth_user_created'), 'auth.users has on_auth_user_created trigger');
+
+// 6. store-attachments bucket + its 4 storage.objects policies (V2 HT-B).
+// Not in the public-schema policy count above — storage.objects lives in
+// the `storage` schema.
+const bucket = psql(`select public from storage.buckets where id='store-attachments';`);
+ok(bucket === 'f', 'store-attachments bucket exists and is private');
+const storagePol = Number(psql(`select count(*) from pg_policies where schemaname='storage' and tablename='objects' and policyname like '%store attachments%';`));
+ok(storagePol === 4, `4 storage.objects policies for store-attachments (got ${storagePol})`);
 
 console.log(`\ndb-check: ${fail === 0 ? 'OK' : 'FAILED'}  (${pass} pass, ${fail} fail)`);
 process.exit(fail === 0 ? 0 : 1);

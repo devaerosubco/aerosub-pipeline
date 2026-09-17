@@ -20,7 +20,7 @@ export function companyFromRow(row) {
     priority: row.priority, stage: row.stage, sector: row.sector || '',
     summary: row.summary || '', notes: row.notes || '',
     painPoints: arr(row.pain_points), currentSolutions: arr(row.current_solutions),
-    flags: [], contacts: [], recommended: [], // filled in by assembleCompanies()
+    flags: [], contacts: [], recommended: [], recommendedServices: [], // filled in by assembleCompanies()
   };
 }
 export function flagFromRow(row) {
@@ -40,7 +40,27 @@ export function productFromRow(row) {
   return {
     id: row.id, name: row.name, tag: row.tag || '', kind: row.kind, status: row.status,
     blurb: row.blurb || '', highlights: arr(row.highlights),
+    categoryId: row.category_id || '', vendorName: row.vendor_name || '',
+    datasheetPath: row.datasheet_path || '', imagePaths: arr(row.image_paths),
+    priceAmount: row.price_amount === null || row.price_amount === undefined ? null : Number(row.price_amount),
+    priceCurrency: row.price_currency || 'NGN', oem: !!row.oem,
+    archivedAt: row.archived_at || '', searchCount: row.search_count || 0,
+    addedToQuoteCount: row.added_to_quote_count || 0,
   };
+}
+export function serviceFromRow(row) {
+  return {
+    id: row.id, name: row.name, status: row.status,
+    blurb: row.blurb || '', highlights: arr(row.highlights),
+    categoryId: row.category_id || '', imagePaths: arr(row.image_paths),
+    priceAmount: row.price_amount === null || row.price_amount === undefined ? null : Number(row.price_amount),
+    priceCurrency: row.price_currency || 'NGN',
+    archivedAt: row.archived_at || '', searchCount: row.search_count || 0,
+    addedToQuoteCount: row.added_to_quote_count || 0,
+  };
+}
+export function companyServiceFromRow(row) {
+  return { id: row.id, companyId: row.company_id, svc: row.service_id, why: row.rationale || '' };
 }
 export function taskFromRow(row) {
   return { id: row.id, title: row.title, companyId: row.company_id || '', due: row.due || '', priority: row.priority, done: !!row.done };
@@ -135,6 +155,18 @@ export function productToRow(p) {
   return {
     name: p.name, tag: p.tag || null, kind: p.kind || 'Product',
     status: p.status || 'Active', blurb: p.blurb || null, highlights: p.highlights || [],
+    category_id: p.categoryId || null, vendor_name: p.vendorName || null,
+    datasheet_path: p.datasheetPath || null, image_paths: p.imagePaths || [],
+    price_amount: p.priceAmount ?? null, price_currency: p.priceCurrency || 'NGN',
+    oem: !!p.oem,
+  };
+}
+export function serviceToRow(s) {
+  return {
+    name: s.name, status: s.status || 'Active', blurb: s.blurb || null,
+    highlights: s.highlights || [], category_id: s.categoryId || null,
+    image_paths: s.imagePaths || [],
+    price_amount: s.priceAmount ?? null, price_currency: s.priceCurrency || 'NGN',
   };
 }
 export function connectorToRow(c) {
@@ -156,11 +188,12 @@ export function attendeeToRow(a) {
    assembling nested shapes
    ============================================================ */
 
-function assembleCompanies(companyRows, flagRows, contactRows, recRows) {
+function assembleCompanies(companyRows, flagRows, contactRows, recRows, recServiceRows) {
   const byId = new Map(companyRows.map(r => [r.id, companyFromRow(r)]));
   flagRows.forEach(r => { const c = byId.get(r.company_id); if (c) c.flags.push(flagFromRow(r)); });
   contactRows.forEach(r => { const c = byId.get(r.company_id); if (c) c.contacts.push(contactFromRow(r)); });
   recRows.forEach(r => { const c = byId.get(r.company_id); if (c) c.recommended.push(recommendedFromRow(r)); });
+  recServiceRows.forEach(r => { const c = byId.get(r.company_id); if (c) c.recommendedServices.push(companyServiceFromRow(r)); });
   return [...byId.values()];
 }
 function assembleCompetitors(competitorRows, campaignRows) {
@@ -188,13 +221,14 @@ async function sel(table, cols, opts) {
 }
 
 async function fetchCompanies() {
-  const [companyRows, flagRows, contactRows, recRows] = await Promise.all([
+  const [companyRows, flagRows, contactRows, recRows, recServiceRows] = await Promise.all([
     sel('companies', '*'),
     sel('company_flags', '*'),
     sel('contacts', '*'),
     sel('company_products', '*'),
+    sel('company_services', '*'),
   ]);
-  return assembleCompanies(companyRows, flagRows, contactRows, recRows);
+  return assembleCompanies(companyRows, flagRows, contactRows, recRows, recServiceRows);
 }
 async function fetchNews() {
   const rows = await sel('news_items', '*');
@@ -242,13 +276,14 @@ export async function loadMoreActivity(before) {
 
 export async function loadAll() {
   const [
-    companies, tasks, productRows, competitors, news, research,
+    companies, tasks, productRows, serviceRows, competitors, news, research,
     events, connectorRows, activityLog, appSettings,
     productCategoryRows, serviceCategoryRows,
   ] = await Promise.all([
     fetchCompanies(),
     sel('tasks', '*').then(rows => rows.map(taskFromRow)),
     sel('products', '*'),
+    sel('services', '*'),
     fetchCompetitors(),
     fetchNews(),
     fetchResearchPage(null),
@@ -264,6 +299,7 @@ export async function loadAll() {
     companies,
     tasks,
     solutions: productRows.map(productFromRow),
+    services: serviceRows.map(serviceFromRow),
     competitors,
     news,
     research,
@@ -313,8 +349,11 @@ export async function refetchView(name) {
       return { competitors: await fetchCompetitors() };
     case 'tasks':
       return { tasks: (await sel('tasks', '*')).map(taskFromRow) };
-    case 'solutions':
-      return { solutions: (await sel('products', '*')).map(productFromRow) };
+    case 'solutions': // the Store view's ui.view id — kept from before the V2 rename
+      return {
+        solutions: (await sel('products', '*')).map(productFromRow),
+        services: (await sel('services', '*')).map(serviceFromRow),
+      };
     case 'events':
       return { events: await fetchEvents() };
     default:
