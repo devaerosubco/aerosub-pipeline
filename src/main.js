@@ -19,6 +19,7 @@ import * as eventsApi from './api/events.js';
 import * as profilesApi from './api/profiles.js';
 import * as categoriesApi from './api/categories.js';
 import * as servicesApi from './api/services.js';
+import * as storeSharesApi from './api/storeShares.js';
 import { uploadFile, signedUrl, removeFile } from './storage.js';
 import { csvToObjects } from './csv.js';
 import { emailRule, normalizeLinkedin, normalizeUrlish, urlRule, dateRule, validateChanged } from './validate.js';
@@ -649,8 +650,13 @@ const ui = {
   companyFilter:{priority:'', stage:''},
   competitorFilter:{modality:'', threat:''},
   search:'',
-  storeTab:'products',    // 'products' | 'services' — Store sub-nav (V2 HT-B)
+  storeTab:'dashboard',    // 'dashboard' | 'products' | 'services' — Store sub-nav (V2 HT-B/C)
   storeShowArchived:false,
+  storeShowSharedOnly:false,
+  storeLayout:'cards',     // 'cards' | 'list' (V2 HT-C)
+  storeSelected:new Set(),
+  storeExpanded:new Set(), // list-view "expand for more info" (V2 HT-C)
+  storeVisibleCount:50,    // pagination — "5 columns by 10 rows" (V2 HT-C)
   drawerKind:null,        // 'company' | 'product' | 'service' | 'competitor' | 'event' | null
   drawerCompanyId:null,
   drawerProductId:null,
@@ -678,6 +684,32 @@ const AUTH = {
 
 // Team data for the Settings view (profiles + invites), fetched on demand.
 const SETTINGS = { profiles: [], invites: [], loaded: false, loading: false };
+
+// Store sharing (V2 HT-C) — loaded lazily on first Store visit, same pattern
+// as SETTINGS above. sharedWithMe drives the "Shared with me" filter.
+const STORE_SHARES = { sharedWithMe: [], loaded: false, loading: false };
+function loadStoreShares(){
+  if (STORE_SHARES.loading || !AUTH.profile) return;
+  STORE_SHARES.loading = true;
+  storeSharesApi.listSharedWithMe(AUTH.profile.id)
+    .then(rows=>{ STORE_SHARES.sharedWithMe = rows; STORE_SHARES.loaded = true; })
+    .catch(()=>{})
+    .finally(()=>{ STORE_SHARES.loading = false; if (ui.view==='solutions') renderView(); });
+}
+// The per-item Share section shown in the product/service drawers.
+const ITEM_SHARE = { key: null, teammates: [], shares: [], loaded: false, loading: false };
+function loadItemShares(kind, id){
+  if (ITEM_SHARE.loading) return;
+  ITEM_SHARE.loading = true;
+  Promise.all([listProfiles(), storeSharesApi.listForItem(kind, id)])
+    .then(([teammates, shares])=>{ ITEM_SHARE.key = `${kind}:${id}`; ITEM_SHARE.teammates = teammates; ITEM_SHARE.shares = shares; ITEM_SHARE.loaded = true; })
+    .catch(()=>{})
+    .finally(()=>{
+      ITEM_SHARE.loading = false;
+      if (kind==='product' && ui.drawerProductId===id) renderProductDrawer();
+      if (kind==='service' && ui.drawerServiceId===id) renderServiceDrawer();
+    });
+}
 
 // Research clips + the activity log are loaded newest-page-first (PRD §16
 // S-2/S-12). The *End flags go true once a "Load older" page comes back
@@ -853,7 +885,7 @@ function renderApp(){
           <h1>${viewTitle()}</h1>
         </div>
         <button class="btn btn-ghost" id="refreshAllBtn" title="Re-pull everything from the server (PRD §9 — no realtime, refetch on demand)">${ICONS.refresh||'↻'} Refresh</button>
-        ${['companies','contacts','solutions','competitors','research','events'].includes(ui.view) ? `
+        ${['companies','contacts','solutions','competitors','research','events'].includes(ui.view) && !(ui.view==='solutions' && ui.storeTab==='dashboard') ? `
         <div class="search-wrap">
           ${ICONS.search}
           <input id="searchInput" placeholder="Search ${ui.view==='solutions'?ui.storeTab:ui.view}…" value="${esc(ui.search)}">
@@ -861,7 +893,7 @@ function renderApp(){
         ${ui.view==='companies' ? `<button class="btn btn-primary" id="addCompanyBtn">${ICONS.plus} Account</button>`:''}
         ${ui.view==='contacts' ? `<button class="btn btn-primary" id="addContactBtn">${ICONS.plus} Contact</button>`:''}
         ${ui.view==='tasks' ? `<button class="btn btn-primary" id="addTaskBtn">${ICONS.plus} Task</button>`:''}
-        ${ui.view==='solutions' ? `<button class="btn btn-ghost" id="bulkUploadStoreBtn">${ICONS.upload} Bulk upload</button><button class="btn btn-primary" id="addSolutionBtn">${ICONS.plus} ${ui.storeTab==='services'?'Service':'Product'}</button>`:''}
+        ${ui.view==='solutions' && ui.storeTab!=='dashboard' ? `<button class="btn btn-ghost" id="bulkUploadStoreBtn">${ICONS.upload} Bulk upload</button><button class="btn btn-primary" id="addSolutionBtn">${ICONS.plus} ${ui.storeTab==='services'?'Service':'Product'}</button>`:''}
         ${ui.view==='competitors' ? `<button class="btn btn-primary" id="addCompetitorBtn">${ICONS.plus} Competitor</button>`:''}
         ${ui.view==='events' ? `<button class="btn btn-primary" id="addEventBtn">${ICONS.plus} Event</button>`:''}
         ${ui.view==='research' ? `<button class="btn btn-ghost" id="importResearchBtn">${ICONS.upload} Import clips</button><input type="file" id="importResearchFile" accept="application/json" style="display:none"><button class="btn btn-primary" id="addResearchBtn">${ICONS.plus} Clip</button>`:''}
@@ -885,6 +917,7 @@ function bindShell(){
     btn.addEventListener('click', ()=>{
       const view = btn.dataset.nav;
       ui.view = view; ui.search = '';
+      ui.storeSelected.clear(); ui.storeExpanded.clear();
       renderApp();
       refreshCurrentView(view);   // PRD §9: refetch that view's slice on navigate
     });
@@ -1715,6 +1748,61 @@ function statusChipClass(status){
   return status==='Active' ? 'chip-good' : status==='Pilot' ? 'chip-medium' : 'chip-low';
 }
 
+// Share section (V2 HT-C) — shared by the product and service drawers.
+// Members-only: sharing doesn't grant new access (every member can already
+// read every catalog item, flat RLS) — it's a pointer + a "Shared with me"
+// filter, plus a deep link that only works for someone already signed in.
+function renderShareSection(kind, id){
+  const ready = ITEM_SHARE.key === `${kind}:${id}`;
+  const shares = ready ? ITEM_SHARE.shares : [];
+  const teammates = ready ? ITEM_SHARE.teammates : [];
+  const shareable = teammates.filter(t=>t.id!==AUTH.profile.id && !shares.some(sh=>sh.shared_with===t.id));
+  return `
+    <div class="dsec">
+      <div class="dsec-head"><h4>Share</h4></div>
+      ${!ready ? `<div class="sub">Loading…</div>` : `
+        ${shares.length===0 ? `<div class="empty" style="padding:12px;">${ICONS.empty}<div>Not shared with anyone yet.</div></div>` :
+          shares.map(sh=>{
+            const who = teammates.find(t=>t.id===sh.shared_with);
+            return `<div class="bullet solution"><span style="flex:1;">${esc(who?(who.full_name||who.email):'Unknown')}</span><button class="x" data-revoke-share="${sh.id}">${ICONS.x}</button></div>`;
+          }).join('')}
+        ${shareable.length===0 ? '' : `
+        <div class="add-inline">
+          <select id="shareTeammate">${shareable.map(t=>`<option value="${t.id}">${esc(t.full_name||t.email)}</option>`).join('')}</select>
+          <button class="btn btn-sm" id="shareBtn">${ICONS.plus} Share</button>
+        </div>`}
+      `}
+      <div class="small-btn-row" style="margin-top:8px;"><button class="btn btn-sm btn-ghost" id="copyShareLinkBtn">Copy link</button></div>
+    </div>
+  `;
+}
+function bindShareSection(kind, id){
+  if (ITEM_SHARE.key !== `${kind}:${id}`) loadItemShares(kind, id);
+  const shareBtn = document.getElementById('shareBtn');
+  if (shareBtn) shareBtn.addEventListener('click', async ()=>{
+    const sel = document.getElementById('shareTeammate');
+    if (!sel || !sel.value) return;
+    try{
+      await storeSharesApi.share(kind, id, AUTH.profile.id, sel.value);
+      ITEM_SHARE.key = null; loadItemShares(kind, id);
+      toast('Shared');
+    }catch(e){ toast('Could not share — ' + (e.message || 'try again')); }
+  });
+  document.querySelectorAll('[data-revoke-share]').forEach(b=>b.addEventListener('click', async ()=>{
+    try{
+      await storeSharesApi.revoke(b.dataset.revokeShare);
+      ITEM_SHARE.key = null; loadItemShares(kind, id);
+      toast('Share revoked');
+    }catch(e){ toast('Could not revoke — ' + (e.message || 'try again')); }
+  }));
+  const copyBtn = document.getElementById('copyShareLinkBtn');
+  if (copyBtn) copyBtn.addEventListener('click', async ()=>{
+    const link = storeSharesApi.shareLink(kind, id);
+    try{ await navigator.clipboard.writeText(link); toast('Link copied'); }
+    catch(e){ openLinkModal('Share link', 'Works for anyone already signed in as a member — it opens straight to this item.', link); }
+  });
+}
+
 function renderProductDrawer(){
   const p = solutionById(ui.drawerProductId);
   const drawer = document.getElementById('drawer');
@@ -1779,6 +1867,8 @@ function renderProductDrawer(){
         </div>
       </div>
 
+      ${renderShareSection('product', p.id)}
+
       <div class="dsec">
         <div class="dsec-head"><h4>Description</h4></div>
         <textarea class="notes-area" id="blurbArea">${esc(p.blurb||'')}</textarea>
@@ -1820,6 +1910,7 @@ function renderProductDrawer(){
 
 function bindProductDrawer(p){
   document.getElementById('drawerCloseBtn').addEventListener('click', closeDrawer);
+  bindShareSection('product', p.id);
   document.getElementById('statusSelect').addEventListener('change', async e=>{
     const status = e.target.value;
     try{ await productsApi.setStatus(p.id, status); p.status = status; }
@@ -2038,6 +2129,8 @@ function renderServiceDrawer(){
         </div>
       </div>
 
+      ${renderShareSection('service', s.id)}
+
       <div class="dsec">
         <div class="dsec-head"><h4>Description</h4></div>
         <textarea class="notes-area" id="blurbArea">${esc(s.blurb||'')}</textarea>
@@ -2079,6 +2172,7 @@ function renderServiceDrawer(){
 
 function bindServiceDrawer(s){
   document.getElementById('drawerCloseBtn').addEventListener('click', closeDrawer);
+  bindShareSection('service', s.id);
   document.getElementById('statusSelect').addEventListener('change', async e=>{
     const status = e.target.value;
     try{ await servicesApi.setStatus(s.id, status); s.status = status; }
@@ -3469,6 +3563,28 @@ function openInviteLinkModal(link){
     };
   });
 }
+// Generic copy-link fallback (V2 HT-C — Store share links). Only works for
+// someone already signed in as a member; the auth gate still applies, so
+// this can't reintroduce the no-login access deferred in PRD-v2 §0.
+function openLinkModal(title, message, link){
+  openModal(`
+    <h3>${esc(title)}</h3>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">${esc(message)}</p>
+    <div class="field"><textarea id="genLink" readonly style="min-height:64px;">${esc(link)}</textarea></div>
+    <div class="modal-actions">
+      <button class="btn" id="mClose">Close</button>
+      <button class="btn btn-primary" id="mCopy">Copy</button>
+    </div>
+  `, body=>{
+    body.querySelector('#mClose').onclick = closeModal;
+    const ta = body.querySelector('#genLink');
+    ta.addEventListener('focus', ()=>ta.select());
+    body.querySelector('#mCopy').onclick = async ()=>{
+      try{ await navigator.clipboard.writeText(link); toast('Copied'); }
+      catch(e){ ta.select(); try{ document.execCommand('copy'); toast('Copied'); }catch(_){ toast('Select the text and copy it'); } }
+    };
+  });
+}
 function openRenameCategoryModal(kind, id, currentName){
   openModal(`
     <h3>Rename category</h3>
@@ -3710,12 +3826,28 @@ async function enterApp(){
   AUTH.profile = profile;
   AUTH.mode = 'app';
   SETTINGS.loaded = false;
-  if (location.search.indexOf('invite=') !== -1 || location.search.indexOf('email=') !== -1){
-    const u = new URL(location.href);
-    u.searchParams.delete('invite'); u.searchParams.delete('email');
+  STORE_SHARES.loaded = false; ITEM_SHARE.key = null;
+  const u = new URL(location.href);
+  const storeParam = u.searchParams.get('store');   // V2 HT-C share deep link
+  if (location.search.indexOf('invite=') !== -1 || location.search.indexOf('email=') !== -1 || storeParam){
+    u.searchParams.delete('invite'); u.searchParams.delete('email'); u.searchParams.delete('store');
     history.replaceState({}, '', u.pathname + (u.search || '') + u.hash);
   }
   await loadDataAndRender();
+  if (storeParam) openStoreShareLink(storeParam);
+}
+
+// A Store "Copy link" (V2 HT-C) lands here as ?store=product:<id> or
+// ?store=service:<id> — members-only: this is a deep link, not a new grant
+// (every member can already read every item), and it silently no-ops if the
+// item doesn't resolve (deleted, or a malformed param).
+function openStoreShareLink(param){
+  const [kind, id] = String(param).split(':');
+  if (kind!=='product' && kind!=='service') return;
+  if (!storeItemById(kind, id)) return;
+  ui.view = 'solutions'; ui.storeTab = kind==='service' ? 'services' : 'products';
+  renderApp();
+  storeKindOpen(kind, id);
 }
 
 // Loads every table from Supabase (src/store.js) and renders the app, or a
@@ -3904,10 +4036,8 @@ function bindTasksControls(){
 }
 
 /* ============================================================
-   STORE VIEW (V2 HT-B) — Product / Service sub-tabs over the same catalog
-   this used to be the single "Products & Offers" view. Card grid + bulk/
-   single upload here; the dashboard/card-vs-list toggle/bulk actions from
-   PRD-v2 §3 are HT-C, not this task.
+   STORE VIEW (V2 HT-B/C) — Dashboard / Product / Service sub-tabs over the
+   catalog that used to be the single "Products & Offers" view.
    ============================================================ */
 function taggedCompaniesForService(serviceId){
   const rows = [];
@@ -3920,49 +4050,117 @@ function untaggedCompaniesForService(serviceId){
   const taggedIds = new Set(taggedCompaniesForService(serviceId).map(r=>r.company.id));
   return DATA.companies.filter(c=>!taggedIds.has(c.id));
 }
-function filteredSolutions(){
+function categoryName(list, id){ const c = list.find(x=>x.id===id); return c ? c.name : ''; }
+
+// --- kind-generic helpers (kind: 'product' | 'service') --------------------
+function storeKindItems(kind){ return kind==='service' ? DATA.services : DATA.solutions; }
+function storeKindApi(kind){ return kind==='service' ? servicesApi : productsApi; }
+function storeKindCategories(kind){ return kind==='service' ? DATA.settings.serviceCategories : DATA.settings.productCategories; }
+function storeKindTagged(kind, id){ return kind==='service' ? taggedCompaniesForService(id) : taggedCompaniesFor(id); }
+function storeKindOpen(kind, id){ return kind==='service' ? openServiceDrawer(id) : openProductDrawer(id); }
+function storeItemById(kind, id){ return kind==='service' ? serviceById(id) : solutionById(id); }
+
+function filteredStoreItems(kind){
   const q = ui.search.trim().toLowerCase();
-  const base = DATA.solutions.filter(s=>ui.storeShowArchived ? true : !s.archivedAt);
+  const sharedIds = ui.storeShowSharedOnly
+    ? new Set(STORE_SHARES.sharedWithMe.filter(sh=>sh.item_type===kind).map(sh=>sh.item_id))
+    : null;
+  let base = storeKindItems(kind).filter(s=>
+    (ui.storeShowArchived || !s.archivedAt) && (!sharedIds || sharedIds.has(s.id))
+  );
   if (!q) return base;
   return base.filter(s=>
     s.name.toLowerCase().includes(q) || (s.tag||'').toLowerCase().includes(q) || (s.blurb||'').toLowerCase().includes(q)
   );
 }
-function filteredServices(){
-  const q = ui.search.trim().toLowerCase();
-  const base = DATA.services.filter(s=>ui.storeShowArchived ? true : !s.archivedAt);
-  if (!q) return base;
-  return base.filter(s=> s.name.toLowerCase().includes(q) || (s.blurb||'').toLowerCase().includes(q));
+
+function storeAllItems(){
+  return [
+    ...DATA.solutions.map(s=>({...s, kind:'product'})),
+    ...DATA.services.map(s=>({...s, kind:'service'})),
+  ];
 }
-function categoryName(list, id){ const c = list.find(x=>x.id===id); return c ? c.name : ''; }
+
 function renderSolutions(){
+  const onGrid = ui.storeTab!=='dashboard';
   return `
     <div class="toolbar">
       <div class="seg">
+        <button data-store-tab="dashboard" class="${ui.storeTab==='dashboard'?'active':''}">Dashboard</button>
         <button data-store-tab="products" class="${ui.storeTab==='products'?'active':''}">Products</button>
         <button data-store-tab="services" class="${ui.storeTab==='services'?'active':''}">Services</button>
+      </div>
+      ${onGrid ? `
+      <div class="seg" style="margin-left:12px;">
+        <button data-store-layout="cards" class="${ui.storeLayout==='cards'?'active':''}">Cards</button>
+        <button data-store-layout="list" class="${ui.storeLayout==='list'?'active':''}">List</button>
       </div>
       <label class="row" style="gap:6px;align-items:center;font-size:11.5px;color:var(--muted);margin-left:12px;">
         <input type="checkbox" id="storeShowArchived" ${ui.storeShowArchived?'checked':''}> Show archived
       </label>
+      <label class="row" style="gap:6px;align-items:center;font-size:11.5px;color:var(--muted);margin-left:12px;">
+        <input type="checkbox" id="storeShowSharedOnly" ${ui.storeShowSharedOnly?'checked':''}> Shared with me
+      </label>` : ''}
     </div>
-    ${ui.storeTab==='services' ? renderServicesGrid() : renderProductsGrid()}
+    ${ui.storeTab==='dashboard' ? renderStoreDashboard() : renderStoreGrid(ui.storeTab==='services'?'service':'product')}
   `;
 }
-function renderProductsGrid(){
-  const list = filteredSolutions();
-  if (!list.length) return `<div class="empty">${ICONS.empty}<div>No products match.</div></div>`;
+
+function renderStoreDashboard(){
+  const active = storeAllItems().filter(s=>!s.archivedAt);
+  const recent = [...active].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||'')).slice(0,5);
+  const mostSearched = active.filter(s=>s.searchCount>0).sort((a,b)=>b.searchCount-a.searchCount).slice(0,5);
+  const mostQuoted = active.filter(s=>s.addedToQuoteCount>0).sort((a,b)=>b.addedToQuoteCount-a.addedToQuoteCount).slice(0,5);
+  const tile = (items, emptyLabel, metric)=> items.length===0
+    ? `<div class="empty" style="padding:14px;">${ICONS.empty}<div>${emptyLabel}</div></div>`
+    : items.map(s=>`
+        <div class="needs-row" data-store-dash-open="${s.kind}:${s.id}" style="cursor:pointer;">
+          <span class="t"><span class="chip chip-teal" style="margin-right:6px;">${s.kind==='service'?'Service':'Product'}</span>${esc(s.name)}</span>
+          <span class="d">${esc(metric(s))}</span>
+        </div>`).join('');
+  return `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;">
+      <div class="card panel"><h3>Recently added</h3>${tile(recent, 'Nothing added yet.', s=>s.createdAt?fmtDate(s.createdAt.slice(0,10)):'')}</div>
+      <div class="card panel"><h3>Most searched</h3>${tile(mostSearched, 'No searches recorded yet.', s=>String(s.searchCount))}</div>
+      <div class="card panel"><h3>Most added to quote</h3>${tile(mostQuoted, 'Nothing added to a quote yet.', s=>String(s.addedToQuoteCount))}</div>
+      <div class="card panel">
+        <h3>Totals</h3>
+        <div class="needs-row"><span class="t">Products</span><span class="d tabular">${DATA.solutions.filter(s=>!s.archivedAt).length}</span></div>
+        <div class="needs-row"><span class="t">Services</span><span class="d tabular">${DATA.services.filter(s=>!s.archivedAt).length}</span></div>
+      </div>
+    </div>
+  `;
+}
+
+function renderStoreGrid(kind){
+  const all = filteredStoreItems(kind);
+  const list = all.slice(0, ui.storeVisibleCount);
+  const categories = storeKindCategories(kind);
+  const remaining = all.length - list.length;
+  const body = !list.length
+    ? `<div class="empty">${ICONS.empty}<div>No ${kind==='service'?'services':'products'} match.</div></div>`
+    : ui.storeLayout==='list' ? renderStoreList(list, kind, categories) : renderStoreCards(list, kind, categories);
+  return `
+    ${ui.storeSelected.size>0 ? renderStoreBulkToolbar(ui.storeSelected.size) : ''}
+    ${body}
+    ${remaining>0 ? `<div style="text-align:center;margin-top:14px;"><button class="btn btn-sm btn-ghost" id="storeShowMoreBtn">Show ${Math.min(50,remaining)} more (${remaining} left)</button></div>` : ''}
+  `;
+}
+
+function renderStoreCards(list, kind, categories){
   return `<div class="sol-grid">
     ${list.map(s=>{
-      const tagged = taggedCompaniesFor(s.id);
+      const tagged = storeKindTagged(kind, s.id);
       const hl = (s.highlights||[]).slice(0,2);
+      const openAttr = kind==='service' ? `data-open-service="${s.id}"` : `data-open-product="${s.id}"`;
       return `
-      <div class="card sol-card" data-open-product="${s.id}" style="cursor:pointer;${s.archivedAt?'opacity:.55;':''}">
-        <div class="row" style="justify-content:space-between;margin-bottom:8px;">
-          <span class="chip chip-teal">${esc(s.tag||categoryName(DATA.settings.productCategories, s.categoryId)||'General')}</span>
+      <div class="card sol-card" ${openAttr} style="cursor:pointer;position:relative;${s.archivedAt?'opacity:.55;':''}">
+        <input type="checkbox" data-store-select="${s.id}" ${ui.storeSelected.has(s.id)?'checked':''} style="position:absolute;top:12px;left:12px;">
+        <div class="row" style="justify-content:space-between;margin-bottom:8px;padding-left:22px;">
+          <span class="chip chip-teal">${esc((kind==='product'&&s.tag) || categoryName(categories, s.categoryId) || 'General')}</span>
           <span class="chip ${statusChipClass(s.status||'Active')}">${esc(s.status||'Active')}</span>
         </div>
-        <h3>${esc(s.name)}${s.oem?' <span class="chip chip-gold" style="font-size:9px;">OEM</span>':''}</h3>
+        <h3>${esc(s.name)}${kind==='product'&&s.oem?' <span class="chip chip-gold" style="font-size:9px;">OEM</span>':''}</h3>
         <p>${esc(s.blurb||'')}</p>
         ${s.priceAmount!=null ? `<div class="sub" style="margin-bottom:6px;">${esc(s.priceCurrency)} ${s.priceAmount.toLocaleString()}</div>` : ''}
         ${hl.length ? `<div class="bullets" style="margin-bottom:10px;">${hl.map(h=>`<div class="bullet solution" style="font-size:11.5px;padding:6px 8px;">${esc(h)}</div>`).join('')}</div>` : ''}
@@ -3971,38 +4169,166 @@ function renderProductsGrid(){
     }).join('')}
   </div>`;
 }
-function renderServicesGrid(){
-  const list = filteredServices();
-  if (!list.length) return `<div class="empty">${ICONS.empty}<div>No services match.</div></div>`;
-  return `<div class="sol-grid">
-    ${list.map(s=>{
-      const tagged = taggedCompaniesForService(s.id);
-      const hl = (s.highlights||[]).slice(0,2);
-      return `
-      <div class="card sol-card" data-open-service="${s.id}" style="cursor:pointer;${s.archivedAt?'opacity:.55;':''}">
-        <div class="row" style="justify-content:space-between;margin-bottom:8px;">
-          <span class="chip chip-teal">${esc(categoryName(DATA.settings.serviceCategories, s.categoryId)||'General')}</span>
-          <span class="chip ${statusChipClass(s.status||'Active')}">${esc(s.status||'Active')}</span>
-        </div>
-        <h3>${esc(s.name)}</h3>
-        <p>${esc(s.blurb||'')}</p>
-        ${s.priceAmount!=null ? `<div class="sub" style="margin-bottom:6px;">${esc(s.priceCurrency)} ${s.priceAmount.toLocaleString()}</div>` : ''}
-        ${hl.length ? `<div class="bullets" style="margin-bottom:10px;">${hl.map(h=>`<div class="bullet solution" style="font-size:11.5px;padding:6px 8px;">${esc(h)}</div>`).join('')}</div>` : ''}
-        <div class="adopters">Tagged to: ${tagged.length?tagged.map(t=>esc(t.company.name)).join(', '):'no accounts yet'}</div>
-      </div>`;
-    }).join('')}
+
+function renderStoreList(list, kind, categories){
+  return `
+  <div class="card tablewrap">
+    <table>
+      <thead><tr><th></th><th>Name</th><th>Category</th><th>Status</th><th>Price</th><th></th></tr></thead>
+      <tbody>
+        ${list.map(s=>{
+          const expanded = ui.storeExpanded.has(s.id);
+          const tagged = storeKindTagged(kind, s.id);
+          const hl = s.highlights||[];
+          return `
+          <tr>
+            <td><input type="checkbox" data-store-select="${s.id}" ${ui.storeSelected.has(s.id)?'checked':''}></td>
+            <td class="name-cell" data-store-open="${kind}:${s.id}" style="cursor:pointer;">${esc(s.name)}${s.archivedAt?' <span class="sub">(archived)</span>':''}</td>
+            <td>${esc(categoryName(categories, s.categoryId)||'—')}</td>
+            <td><span class="chip ${statusChipClass(s.status||'Active')}">${esc(s.status||'Active')}</span></td>
+            <td class="tabular">${s.priceAmount!=null?esc(s.priceCurrency+' '+s.priceAmount.toLocaleString()):'—'}</td>
+            <td style="text-align:right;"><button class="btn btn-sm btn-ghost" data-store-expand="${s.id}">${expanded?'Less':'More'}</button></td>
+          </tr>
+          ${expanded?`<tr><td></td><td colspan="5">
+            <div class="sub" style="padding:6px 0;">${esc(s.blurb||'No description.')}</div>
+            ${hl.length?`<div class="bullets" style="margin-bottom:8px;">${hl.map(h=>`<div class="bullet solution" style="font-size:11.5px;padding:6px 8px;">${esc(h)}</div>`).join('')}</div>`:''}
+            <div class="adopters">Tagged to: ${tagged.length?tagged.map(t=>esc(t.company.name)).join(', '):'no accounts yet'}</div>
+          </td></tr>`:''}
+          `;
+        }).join('')}
+      </tbody>
+    </table>
   </div>`;
 }
+
+function renderStoreBulkToolbar(count){
+  return `
+  <div class="card panel" style="display:flex;align-items:center;gap:10px;padding:10px 14px;margin-bottom:12px;flex-wrap:wrap;">
+    <b>${count} selected</b>
+    <button class="btn btn-sm" id="storeBulkArchiveBtn">Archive</button>
+    <button class="btn btn-sm" id="storeBulkUnarchiveBtn">Unarchive</button>
+    <button class="btn btn-sm" id="storeBulkExportBtn">Export CSV</button>
+    <button class="btn btn-sm" id="storeBulkQuoteBtn">Add to quote</button>
+    <button class="btn btn-sm btn-ghost" id="storeBulkDeleteBtn" style="color:#f3d9d6;">Delete</button>
+    <button class="btn btn-sm btn-ghost" id="storeBulkClearBtn" style="margin-left:auto;">Clear selection</button>
+  </div>`;
+}
+
+function csvEscape(v){
+  const s = String(v ?? '');
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+}
+
 function bindSolutionsControls(){
-  document.querySelectorAll('[data-store-tab]').forEach(b=>b.addEventListener('click', ()=>{ ui.storeTab=b.dataset.storeTab; ui.search=''; renderApp(); }));
+  if (!STORE_SHARES.loaded) loadStoreShares();
+
+  document.querySelectorAll('[data-store-tab]').forEach(b=>b.addEventListener('click', ()=>{
+    ui.storeTab=b.dataset.storeTab; ui.search=''; ui.storeSelected.clear(); ui.storeVisibleCount=50; renderApp();
+  }));
+  document.querySelectorAll('[data-store-layout]').forEach(b=>b.addEventListener('click', ()=>{ ui.storeLayout=b.dataset.storeLayout; renderView(); }));
+
   const archived = document.getElementById('storeShowArchived');
-  if (archived) archived.addEventListener('change', e=>{ ui.storeShowArchived = e.target.checked; renderView(); });
+  if (archived) archived.addEventListener('change', e=>{ ui.storeShowArchived = e.target.checked; ui.storeVisibleCount=50; renderView(); });
+  const sharedOnly = document.getElementById('storeShowSharedOnly');
+  if (sharedOnly) sharedOnly.addEventListener('change', e=>{ ui.storeShowSharedOnly = e.target.checked; ui.storeVisibleCount=50; renderView(); });
+
+  const openWithSearchTracking = (kind, id)=>{
+    if (ui.search.trim()){
+      const item = storeItemById(kind, id);
+      if (item){ storeKindApi(kind).incrementSearchCount(id, item.searchCount).catch(()=>{}); item.searchCount = (item.searchCount||0)+1; }
+    }
+    storeKindOpen(kind, id);
+  };
   document.querySelectorAll('[data-open-product]').forEach(el=>{
-    el.addEventListener('click', ()=>openProductDrawer(el.dataset.openProduct));
+    el.addEventListener('click', ()=>openWithSearchTracking('product', el.dataset.openProduct));
   });
   document.querySelectorAll('[data-open-service]').forEach(el=>{
-    el.addEventListener('click', ()=>openServiceDrawer(el.dataset.openService));
+    el.addEventListener('click', ()=>openWithSearchTracking('service', el.dataset.openService));
   });
+  document.querySelectorAll('[data-store-open]').forEach(el=>{
+    el.addEventListener('click', ()=>{ const [kind,id]=el.dataset.storeOpen.split(':'); openWithSearchTracking(kind, id); });
+  });
+  document.querySelectorAll('[data-store-dash-open]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      const [kind,id]=el.dataset.storeDashOpen.split(':');
+      ui.storeTab = kind==='service' ? 'services' : 'products';
+      renderApp();
+      storeKindOpen(kind, id);
+    });
+  });
+
+  document.querySelectorAll('[data-store-select]').forEach(el=>{
+    el.addEventListener('click', e=>{
+      e.stopPropagation();
+      const id = el.dataset.storeSelect;
+      if (ui.storeSelected.has(id)) ui.storeSelected.delete(id); else ui.storeSelected.add(id);
+      renderView();
+    });
+  });
+  document.querySelectorAll('[data-store-expand]').forEach(el=>{
+    el.addEventListener('click', e=>{
+      e.stopPropagation();
+      const id = el.dataset.storeExpand;
+      if (ui.storeExpanded.has(id)) ui.storeExpanded.delete(id); else ui.storeExpanded.add(id);
+      renderView();
+    });
+  });
+  const showMoreBtn = document.getElementById('storeShowMoreBtn');
+  if (showMoreBtn) showMoreBtn.addEventListener('click', ()=>{ ui.storeVisibleCount += 50; renderView(); });
+
+  // --- bulk toolbar ---------------------------------------------------
+  const kind = ui.storeTab==='services' ? 'service' : 'product';
+  const api = storeKindApi(kind);
+  const selectedItems = ()=> storeKindItems(kind).filter(s=>ui.storeSelected.has(s.id));
+
+  const archiveBtn = document.getElementById('storeBulkArchiveBtn');
+  if (archiveBtn) archiveBtn.addEventListener('click', async ()=>{
+    for (const it of selectedItems()){ try{ await api.archive(it.id); it.archivedAt = new Date().toISOString(); }catch(e){} }
+    ui.storeSelected.clear(); renderView(); toast('Archived');
+  });
+  const unarchiveBtn = document.getElementById('storeBulkUnarchiveBtn');
+  if (unarchiveBtn) unarchiveBtn.addEventListener('click', async ()=>{
+    for (const it of selectedItems()){ try{ await api.unarchive(it.id); it.archivedAt = ''; }catch(e){} }
+    ui.storeSelected.clear(); renderView(); toast('Unarchived');
+  });
+  const quoteBtn = document.getElementById('storeBulkQuoteBtn');
+  if (quoteBtn) quoteBtn.addEventListener('click', async ()=>{
+    for (const it of selectedItems()){ try{ await api.incrementAddedToQuoteCount(it.id, it.addedToQuoteCount); it.addedToQuoteCount = (it.addedToQuoteCount||0)+1; }catch(e){} }
+    ui.storeSelected.clear(); renderView();
+    toast('Added to quote count — full Quote building lands in the Create tab');
+  });
+  const exportBtn = document.getElementById('storeBulkExportBtn');
+  if (exportBtn) exportBtn.addEventListener('click', ()=>{
+    const categories = storeKindCategories(kind);
+    const header = kind==='product' ? ['name','category','blurb','price','currency','vendor','oem'] : ['name','category','blurb','price','currency'];
+    const rows = selectedItems().map(it=>{
+      const base = [it.name, categoryName(categories, it.categoryId), it.blurb||'', it.priceAmount??'', it.priceCurrency];
+      return kind==='product' ? [...base, it.vendorName||'', it.oem?'yes':'no'] : base;
+    });
+    const csv = [header, ...rows].map(r=>r.map(csvEscape).join(',')).join('\n');
+    downloadFile(`aerosub-${kind}s-export-${new Date().toISOString().slice(0,10)}.csv`, csv, 'text/csv');
+  });
+  const deleteBtn = document.getElementById('storeBulkDeleteBtn');
+  if (deleteBtn) deleteBtn.addEventListener('click', ()=>{
+    const items = selectedItems();
+    openConfirmModal(`Delete ${items.length} ${kind}${items.length===1?'':'s'}? This also untags ${items.length===1?'it':'them'} from every account and can't be undone.`, async ()=>{
+      for (const it of items){
+        try{
+          await api.remove(it.id);
+          if (kind==='product'){
+            DATA.companies.forEach(c=>{ c.recommended = c.recommended.filter(r=>r.sol!==it.id); });
+            DATA.solutions = DATA.solutions.filter(x=>x.id!==it.id);
+          } else {
+            DATA.companies.forEach(c=>{ c.recommendedServices = (c.recommendedServices||[]).filter(r=>r.svc!==it.id); });
+            DATA.services = DATA.services.filter(x=>x.id!==it.id);
+          }
+        }catch(e){}
+      }
+      ui.storeSelected.clear(); renderApp(); toast('Deleted');
+    });
+  });
+  const clearBtn = document.getElementById('storeBulkClearBtn');
+  if (clearBtn) clearBtn.addEventListener('click', ()=>{ ui.storeSelected.clear(); renderView(); });
 }
 
 /* ============================================================

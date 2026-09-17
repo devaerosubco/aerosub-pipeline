@@ -60,9 +60,16 @@ export async function archive(id) {
 export async function unarchive(id) {
   await write('products', 'update', { row: { archived_at: null }, match: { id } });
 }
-// search_count / added_to_quote_count are wired up in HT-C (the Store
-// dashboard that actually reads them) — an atomic increment needs an RPC,
-// not a read-then-write from the client, so it isn't stubbed out here.
+// Plain read-then-write, not an atomic RPC increment — matches this app's
+// existing last-write-wins stance everywhere else (V1 PRD §16 S-5); a lost
+// increment on a dashboard vanity counter is inconsequential. Caller passes
+// the count it already has in DATA.
+export async function incrementSearchCount(id, current) {
+  await write('products', 'update', { row: { search_count: (current || 0) + 1 }, match: { id } });
+}
+export async function incrementAddedToQuoteCount(id, current) {
+  await write('products', 'update', { row: { added_to_quote_count: (current || 0) + 1 }, match: { id } });
+}
 
 // Bulk upload (CSV/XLSX, item 1a) — every row lands as 'Pending Review';
 // status is adjusted afterwards from the catalog UI. Rows without a name or

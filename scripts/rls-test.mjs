@@ -20,6 +20,7 @@ const ALL_TABLES = [
   'tasks', 'research_clips', 'events', 'event_attendees', 'news_items',
   'connectors', 'activity_log', 'app_settings',
   'product_categories', 'service_categories', 'services', 'company_services',
+  'store_item_shares',
 ];
 
 let pass = 0, fail = 0;
@@ -112,6 +113,33 @@ const FLAT = ['companies', 'company_flags', 'contacts', 'products', 'company_pro
   await memberA.client.from('companies').delete().eq('id', cid2);
   const delS = await memberA.client.from('services').delete().eq('id', sid);
   ok(!delS.error, 'member can delete a service');
+}
+
+// --- store_item_shares (V2 HT-C): per-row visibility, not flat ----------
+{
+  const sid2 = 'rls-svc2-' + Date.now();
+  await memberA.client.from('services').insert({ id: sid2, name: 'RLS share test service', category_id: 'other' });
+
+  const shareId = crypto.randomUUID();
+  const insShare = await memberA.client.from('store_item_shares')
+    .insert({ id: shareId, item_type: 'service', item_id: sid2, shared_by: memberA.uid, shared_with: memberB.uid });
+  ok(!insShare.error, 'member can share an item they created the share for (shared_by = self)');
+
+  const spoofShare = await memberB.client.from('store_item_shares')
+    .insert({ id: crypto.randomUUID(), item_type: 'service', item_id: sid2, shared_by: memberA.uid, shared_with: memberB.uid });
+  ok(!!spoofShare.error, 'member CANNOT insert a share claiming shared_by = someone else');
+
+  const readAsSharedWith = await memberB.client.from('store_item_shares').select('id').eq('id', shareId);
+  ok((readAsSharedWith.data?.length ?? 0) === 1, 'the recipient (shared_with) can read the share');
+  const readAsSharedBy = await memberA.client.from('store_item_shares').select('id').eq('id', shareId);
+  ok((readAsSharedBy.data?.length ?? 0) === 1, 'the sharer (shared_by) can read their own share');
+
+  const revoke = await memberA.client.from('store_item_shares').delete().eq('id', shareId);
+  ok(!revoke.error, 'the sharer can revoke (delete) their own share');
+  const gone = (await svc.from('store_item_shares').select('id').eq('id', shareId).maybeSingle()).data;
+  ok(gone === null, 'the share is actually gone after revoke');
+
+  await memberA.client.from('services').delete().eq('id', sid2);
 }
 
 // --- storage (V2 HT-B): store-attachments is member-only, anon denied ----

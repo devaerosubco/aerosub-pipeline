@@ -13,7 +13,7 @@ const ok = (c, l) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${l}`); c ? pass++ :
 const rls = psql(`select c.relname, c.relrowsecurity, c.relforcerowsecurity
   from pg_class c join pg_namespace n on n.oid=c.relnamespace
   where n.nspname='public' and c.relkind='r' order by 1;`).split('\n');
-ok(rls.length === 22, `22 public tables (got ${rls.length})`);
+ok(rls.length === 23, `23 public tables (got ${rls.length})`);
 for (const row of rls) {
   const [t, en, fo] = row.split('\t');
   ok(en === 't' && fo === 't', `${t}: RLS enabled+forced`);
@@ -21,7 +21,7 @@ for (const row of rls) {
 
 // 2. policy count
 const pol = Number(psql(`select count(*) from pg_policies where schemaname='public';`));
-ok(pol === 83, `83 policies (got ${pol})`);
+ok(pol === 86, `86 policies (got ${pol})`);
 
 // 3. seed row counts
 const want = {
@@ -29,7 +29,7 @@ const want = {
   competitors: 10, competitor_campaigns: 11, tasks: 12, news_items: 6, events: 6,
   event_attendees: 10, connectors: 3, app_settings: 1,
   product_categories: 7, service_categories: 6,
-  services: 0, company_services: 0,
+  services: 0, company_services: 0, store_item_shares: 0,
   profiles: 0, invites: 0, activity_log: 0, company_stage_changes: 0, research_clips: 0,
 };
 for (const [t, n] of Object.entries(want)) {

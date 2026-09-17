@@ -151,19 +151,48 @@ code. Modeled the Products/Services toggle on the Companies board/table
 - **Single upload**: the product drawer's datasheet field only shows when
   `oem = true` (not services, not non-OEM products).
 
-## 3. Phase 2 — Store dashboard, card/list, bulk actions, member sharing (queued)
+## 3. Phase 2 — Store dashboard, card/list, bulk actions, member sharing (HT-C, shipped)
 
-- Landing dashboard: recently added / most searched / most added-to-quote /
-  totals, from Phase 1's counter columns.
-- Card (grid) / list toggle — the Companies `.seg` + `ui.<x>Layout` pattern,
-  reused as-is.
-- Bulk select + floating action toolbar (archive / delete / export / add to
-  quote) — net-new UI pattern; nothing like it exists anywhere in the app today.
-- Price editing: reduce/increase, hard delete, Naira↔Dollar currency switch —
-  manual entry only, **no live FX conversion**.
-- Members-only sharing: a lightweight `store_item_shares` table (item, shared
-  by, shared with, timestamp) + a "Shared with me" filter. **No public/token
-  link** — deferred per §0.
+- **Dashboard**: a third `storeTab` value (`'dashboard'`, now the default
+  when Store is opened) alongside `'products'`/`'services'` — same `.seg`
+  mechanic as HT-B, just a third button. Four tiles (recently added / most
+  searched / most added-to-quote / totals), computed client-side from
+  `DATA.solutions` + `DATA.services` (already fully loaded, no new query).
+  "Most searched" increments `search_count` when an item is opened while a
+  search query is active (`openWithSearchTracking`); "most added to quote"
+  increments `added_to_quote_count` via the bulk toolbar's "Add to quote"
+  action below — there's no real Quote object yet (that's HT-D), this just
+  wires up the counter HT-B's schema was built for. Both are a plain client
+  read-then-write, not an RPC — matches this app's existing last-write-wins
+  stance (V1 PRD §16 S-5); losing an increment on a dashboard vanity counter
+  is inconsequential.
+- **Card/list toggle**: `ui.storeLayout`, the Companies `.seg` pattern reused
+  verbatim. List rows expand in place for "more info" (blurb, highlights,
+  tagged accounts) via a per-row toggle, not a drawer open.
+- **Pagination**: `ui.storeVisibleCount` (50, "Show more" in steps of 50) —
+  the practical reading of "5 columns by 10 rows"; column count stays
+  responsive (`auto-fill, minmax(280px,1fr)`, unchanged from HT-B) rather
+  than hardcoded, which would break the existing responsive layout.
+- **Bulk select + floating toolbar**: checkboxes on cards/list rows
+  (`stopPropagation`'d so they don't also open the drawer), a toolbar
+  (Archive / Unarchive / Export CSV / Add to quote / Delete) once ≥1 item is
+  selected. Bulk actions loop the existing single-item API calls — no new
+  bulk SQL endpoints; the realistic selection size for an internal tool
+  doesn't need one. Delete also cleans up `company_products`/
+  `company_services` tags. Export reuses the bulk-upload CSV column
+  convention for round-trip symmetry with the importer.
+- **Price editing**: already covered by HT-B's drawer fields (amount +
+  currency, freely editable; clearing the amount and saving = "delete the
+  price") — no additional UI needed here.
+- **Members-only share**: `store_item_shares` (item_type, item_id, shared_by,
+  shared_with, note) — RLS restricts *reading a share row* to its two
+  parties (the one per-row-visibility carve-out in the whole Store schema;
+  everything else stays flat), since every member can already read every
+  catalog item regardless of sharing — a share is a pointer + a "Shared with
+  me" filter, not a new access grant. "Copy link" builds
+  `?store=product:<id>` / `?store=service:<id>`; opening it lands a
+  **signed-in member** straight on that item (the auth gate still applies —
+  a deep link, not the no-login access deferred in §0). No public/token link.
 
 ## 4. Phase 3 — CREATE tab: Quotes/Proforma/Commercials, uploaded templates (queued)
 

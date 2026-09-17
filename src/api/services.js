@@ -44,6 +44,14 @@ export async function remove(id) {
   await write('services', 'delete', { match: { id } }); // company_services cascade in the DB
 }
 
+// Same read-then-write convention as products.js — see the comment there.
+export async function incrementSearchCount(id, current) {
+  await write('services', 'update', { row: { search_count: (current || 0) + 1 }, match: { id } });
+}
+export async function incrementAddedToQuoteCount(id, current) {
+  await write('services', 'update', { row: { added_to_quote_count: (current || 0) + 1 }, match: { id } });
+}
+
 // Bulk upload (CSV/XLSX) — same convention as products.bulkCreate.
 export async function bulkCreate(rows) {
   const payload = rows.map(r => ({

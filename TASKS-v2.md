@@ -10,7 +10,7 @@ Companion doc: [PRD-v2.md](PRD-v2.md). Refs like "PRD-v2 §5" point into it. Thi
 |---|---|
 | HT-A — Foundation (roles, sector, categories) | ✅ 2026-09-17 |
 | HT-B — Store: catalog + bulk/single upload | 🟡 built 2026-09-17, db:check/rls-test/browser pass not yet run (no local Docker this session) |
-| HT-C — Store: dashboard, card/list, bulk actions, sharing | pending |
+| HT-C — Store: dashboard, card/list, bulk actions, sharing | 🟡 built 2026-09-17, same test gap as HT-B |
 | HT-D — Create: Quotes/Proforma/Commercials + templates | pending |
 | HT-E — RFQ Manager | pending |
 | HT-F — Personal vs. general Tasks & Companies | pending |
@@ -145,21 +145,70 @@ Supabase Storage.
 
 ## HT-C. Store dashboard, card/list toggle, bulk actions, member sharing
 
-**Acceptance criteria:** PRD-v2 §3. Landing dashboard (recent / most searched
-/ most added-to-quote / totals). Card/list toggle reusing the Companies `.seg`
-pattern. Bulk select + floating action toolbar (net-new UI). Price edit
-(reduce/increase/currency switch, no live FX) + hard delete. Members-only
-share + "Shared with me" filter.
+**Acceptance criteria:** PRD-v2 §3 (updated with what actually got built —
+read it, not just this list). Landing dashboard (recent / most searched /
+most added-to-quote / totals). Card/list toggle reusing the Companies `.seg`
+pattern. Bulk select + floating action toolbar. Members-only share +
+"Shared with me" filter + a `?store=` deep link.
 
-- [ ] Landing dashboard tiles wired to Phase-1 counters.
-- [ ] Card/list toggle (`ui.storeLayout`, mirroring `ui.companyLayout`).
-- [ ] Bulk select checkboxes + a floating "N selected" toolbar (archive /
-  delete / export / add to quote).
-- [ ] Price editor (amount, currency NGN/USD switch, delete).
-- [ ] `store_item_shares` table + "Shared with me" filter (members only — no
-  public link, PRD-v2 §0/§3).
-- [ ] Tests: RLS for `store_item_shares`; a real-browser pass for bulk
-  archive/delete, currency switch, and sharing between two test members.
+- [x] `20260917140001_store_item_shares.sql` — `store_item_shares` (the one
+  per-row-visibility table in the whole Store schema: read restricted to
+  `shared_by`/`shared_with`, insert requires `shared_by = auth.uid()`, no
+  update policy — a share is immutable, revoke = delete). `src/api/
+  storeShares.js` (`share` — plain insert, not upsert, see the code comment
+  for why; `revoke`, `listForItem`, `listSharedWithMe`, `shareLink`).
+- [x] Dashboard: `ui.storeTab` gains a third value `'dashboard'` (now the
+  default), `renderStoreDashboard()` — 4 tiles from `DATA.solutions`/
+  `DATA.services`, no new query. `search_count`/`added_to_quote_count`
+  wired up (`incrementSearchCount`/`incrementAddedToQuoteCount` in both
+  `api/products.js` and `api/services.js` — plain read-then-write, not an
+  RPC, matching the app's existing last-write-wins stance).
+- [x] Card/list toggle (`ui.storeLayout`) + pagination (`ui.storeVisibleCount`,
+  50 per page / "Show more"). `filteredSolutions`/`filteredServices` and
+  `renderProductsGrid`/`renderServicesGrid` from HT-B **refactored** into
+  kind-generic `filteredStoreItems(kind)`/`renderStoreGrid(kind)` — cards and
+  list view, and everything downstream (bulk select, sharing filter) would
+  have needed writing twice otherwise.
+- [x] Bulk select (`ui.storeSelected`, a `Set`) + floating toolbar
+  (Archive/Unarchive/Export CSV/Add to quote/Delete) — loops the existing
+  single-item API calls, no new bulk SQL. Delete cleans up
+  `company_products`/`company_services` tags + local `DATA` state, mirroring
+  the single-item delete path. CSV export reuses the bulk-upload column
+  convention.
+- [x] Members-only share: drawer "Share" section (`renderShareSection`/
+  `bindShareSection`, shared by both drawers) — pick a teammate, revoke,
+  "Copy link". `ITEM_SHARE` cache (lazy-loaded per open item, mirrors the
+  `SETTINGS` pattern) + `STORE_SHARES` cache (lazy-loaded "shared with me"
+  list) + a `storeShowSharedOnly` filter toggle. `?store=product:<id>` /
+  `?store=service:<id>` deep link, consumed in `enterApp()` (mirrors how
+  `?invite=` already survives the auth flow) — opens the item for a
+  **signed-in member only**; the auth gate is unchanged.
+  - ↳ note: both lazy caches (`STORE_SHARES`, `ITEM_SHARE`) are reset on
+    `enterApp()` (sign-in) alongside the existing `SETTINGS.loaded = false`
+    reset — otherwise switching accounts in the same browser session would
+    briefly show the previous user's "shared with me" list.
+  - ↳ note: `share()` uses a plain `insert`, not the `upsert` originally
+    written — the table has no UPDATE policy (a share is immutable) and the
+    UI already excludes an already-shared teammate from the picker, so
+    upsert's `ON CONFLICT DO UPDATE` path was dead code that would have
+    actually failed (no UPDATE policy) had it ever been hit. Caught in
+    self-review before this was run against a live DB.
+- [x] `scripts/db-check.mjs` (23 tables, 86 policies, `store_item_shares` seed
+  count) / `scripts/rls-test.mjs` (`store_item_shares` in `ALL_TABLES`, a
+  dedicated block: share/read/revoke, a member can't insert a share claiming
+  `shared_by` = someone else) extended — **not yet run against a live DB**.
+- [x] `npx vitest run` — still 60/60 (no new pure-logic units this task; the
+  new code is render/bind/DOM wiring, covered by real-browser passes per
+  this app's existing convention, same as `main.js` always has been).
+  `node --check` clean on every touched file. `npx vite build` clean (439 kB
+  JS / 26 kB CSS). `npm run check:secrets` clean.
+- [ ] `npm run db:reset && npm run db:check && npm run test:rls` — **not yet
+  run**, same reason as HT-A/HT-B: no local Docker/Supabase this session.
+- [ ] Manual real-browser pass: dashboard tiles populate after a search-then-
+  open and after "Add to quote"; card/list toggle; bulk archive/unarchive/
+  export/delete; share an item with a teammate and confirm it shows in
+  their "Shared with me" filter; open a `?store=` link fresh (signed out ->
+  sign in -> lands on the item) — **not yet run**, same reason.
 
 ## HT-D. Create: Quotes/Proforma/Commercials + uploaded templates
 

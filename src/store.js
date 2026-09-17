@@ -45,7 +45,7 @@ export function productFromRow(row) {
     priceAmount: row.price_amount === null || row.price_amount === undefined ? null : Number(row.price_amount),
     priceCurrency: row.price_currency || 'NGN', oem: !!row.oem,
     archivedAt: row.archived_at || '', searchCount: row.search_count || 0,
-    addedToQuoteCount: row.added_to_quote_count || 0,
+    addedToQuoteCount: row.added_to_quote_count || 0, createdAt: row.created_at || '',
   };
 }
 export function serviceFromRow(row) {
@@ -54,7 +54,7 @@ export function serviceFromRow(row) {
     blurb: row.blurb || '', highlights: arr(row.highlights),
     categoryId: row.category_id || '', imagePaths: arr(row.image_paths),
     priceAmount: row.price_amount === null || row.price_amount === undefined ? null : Number(row.price_amount),
-    priceCurrency: row.price_currency || 'NGN',
+    priceCurrency: row.price_currency || 'NGN', createdAt: row.created_at || '',
     archivedAt: row.archived_at || '', searchCount: row.search_count || 0,
     addedToQuoteCount: row.added_to_quote_count || 0,
   };
