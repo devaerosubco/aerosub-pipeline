@@ -19,6 +19,7 @@ const ALL_TABLES = [
   'contacts', 'products', 'company_products', 'competitors', 'competitor_campaigns',
   'tasks', 'research_clips', 'events', 'event_attendees', 'news_items',
   'connectors', 'activity_log', 'app_settings',
+  'product_categories', 'service_categories',
 ];
 
 let pass = 0, fail = 0;
@@ -113,6 +114,35 @@ const FLAT = ['companies', 'company_flags', 'contacts', 'products', 'company_pro
   ok(!!insP.error, 'member CANNOT insert a profiles row directly (trigger-only)');
   const delP = await memberA.client.from('profiles').delete().eq('id', memberB.uid);
   ok((await svc.from('profiles').select('id').eq('id', memberB.uid).maybeSingle()).data !== null, 'member CANNOT delete a profiles row');
+}
+
+// --- roles (V2 Phase 0): admin-only category writes + role changes -------
+{
+  // Bootstrap: promote memberA to admin directly via service_role (bypasses
+  // RLS; the column-lock trigger explicitly allows current_user='service_role'
+  // too, same as the postgres/supabase_admin SQL-editor bootstrap path).
+  await svc.from('profiles').update({ role: 'admin' }).eq('id', memberA.uid);
+
+  for (const t of ['product_categories', 'service_categories']) {
+    const { error: selErr } = await memberB.client.from(t).select('*').limit(1);
+    ok(!selErr, `member can select ${t}`);
+    const insMember = await memberB.client.from(t).insert({ id: crypto.randomUUID(), name: uniq('cat') });
+    ok(!!insMember.error, `member CANNOT insert into ${t}`);
+
+    const cid = crypto.randomUUID();
+    const insAdmin = await memberA.client.from(t).insert({ id: cid, name: uniq('cat') });
+    ok(!insAdmin.error, `admin can insert into ${t}`);
+    const updAdmin = await memberA.client.from(t).update({ name: uniq('cat-renamed') }).eq('id', cid);
+    ok(!updAdmin.error, `admin can update ${t}`);
+    const delAdmin = await memberA.client.from(t).delete().eq('id', cid);
+    ok(!delAdmin.error, `admin can delete ${t}`);
+  }
+
+  const selfPromote = await memberB.client.from('profiles').update({ role: 'admin' }).eq('id', memberB.uid);
+  ok(!!selfPromote.error, 'member CANNOT change their own role (column-lock trigger)');
+  const promoteOther = await memberA.client.from('profiles').update({ role: 'admin' }).eq('id', memberB.uid).select();
+  ok((promoteOther.data?.length ?? 0) === 1, "admin can change another member's role");
+  await svc.from('profiles').update({ role: 'member' }).eq('id', memberB.uid); // reset
 }
 
 // --- company_stage_changes: select only, no client writes ----------------

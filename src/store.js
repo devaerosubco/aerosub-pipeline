@@ -17,7 +17,7 @@ const arr = (v) => (Array.isArray(v) ? v : []);
 export function companyFromRow(row) {
   return {
     id: row.id, name: row.name, type: row.type || '',
-    priority: row.priority, stage: row.stage,
+    priority: row.priority, stage: row.stage, sector: row.sector || '',
     summary: row.summary || '', notes: row.notes || '',
     painPoints: arr(row.pain_points), currentSolutions: arr(row.current_solutions),
     flags: [], contacts: [], recommended: [], // filled in by assembleCompanies()
@@ -110,9 +110,16 @@ export function activityFromRow(row) {
 export function companyToRow(c) {
   return {
     name: c.name, type: c.type || null, priority: c.priority, stage: c.stage,
+    sector: c.sector || null,
     summary: c.summary || null, notes: c.notes || null,
     pain_points: c.painPoints || [], current_solutions: c.currentSolutions || [],
   };
+}
+
+// Product/service category taxonomies (V2 Phase 0) — same shape for both
+// tables, so one pair covers them.
+export function categoryFromRow(row) {
+  return { id: row.id, name: row.name };
 }
 export function newsToRow(n) {
   return { title: n.title, source: n.source || null, url: n.url || null, date: n.date, kind: n.kind || null, ref_id: n.refId || null };
@@ -237,6 +244,7 @@ export async function loadAll() {
   const [
     companies, tasks, productRows, competitors, news, research,
     events, connectorRows, activityLog, appSettings,
+    productCategoryRows, serviceCategoryRows,
   ] = await Promise.all([
     fetchCompanies(),
     sel('tasks', '*').then(rows => rows.map(taskFromRow)),
@@ -248,6 +256,8 @@ export async function loadAll() {
     sel('connectors', '*'),
     fetchActivityPage(null),
     fetchAppSettings(),
+    sel('product_categories', '*', { order: { col: 'name', asc: true } }),
+    sel('service_categories', '*', { order: { col: 'name', asc: true } }),
   ]);
 
   return {
@@ -262,6 +272,8 @@ export async function loadAll() {
     settings: {
       connectors: connectorRows.map(connectorFromRow),
       lastNewsRefresh: appSettings.lastNewsRefresh,
+      productCategories: productCategoryRows.map(categoryFromRow),
+      serviceCategories: serviceCategoryRows.map(categoryFromRow),
     },
   };
 }

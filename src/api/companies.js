@@ -10,11 +10,12 @@ export async function create(company) {
   return companyFromRow(saved);
 }
 
-export async function updateIdentity(id, { name, type, summary }) {
+export async function updateIdentity(id, { name, type, summary, sector }) {
   const row = {};
   if (name !== undefined) row.name = name;
   if (type !== undefined) row.type = type || null;
   if (summary !== undefined) row.summary = summary || null;
+  if (sector !== undefined) row.sector = sector || null;
   await write('companies', 'update', { row, match: { id } });
 }
 

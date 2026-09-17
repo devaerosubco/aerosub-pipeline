@@ -16,6 +16,8 @@ import * as productsApi from './api/products.js';
 import * as activityApi from './api/activity.js';
 import * as connectorsApi from './api/connectors.js';
 import * as eventsApi from './api/events.js';
+import * as profilesApi from './api/profiles.js';
+import * as categoriesApi from './api/categories.js';
 import { emailRule, normalizeLinkedin, normalizeUrlish, urlRule, dateRule, validateChanged } from './validate.js';
 
 /* ============================================================
@@ -94,6 +96,18 @@ const STAGES = [
 const stageOf = id => STAGES.find(s=>s.id===id) || STAGES[0];
 
 const PRIORITIES = ['high','medium','low'];
+
+// Suggested list for the company "sector" field (V2 Phase 0, item 2) — a
+// plain text field, not a controlled taxonomy like product/service
+// categories, so free text is still allowed via the <datalist>.
+const SECTOR_OPTIONS = [
+  'Oil & Gas — Upstream', 'Oil & Gas — Midstream', 'Oil & Gas — Downstream',
+  'Marine & Offshore', 'Power & Utilities', 'EPC / Engineering Contractor',
+  'Government / Regulatory', 'Other',
+];
+function sectorDatalist(id){
+  return `<datalist id="${id}">${SECTOR_OPTIONS.map(s=>`<option value="${esc(s)}">`).join('')}</datalist>`;
+}
 
 /* ============================================================
    AEROSUB BRAND (pulled from aerosub.co, for the Report generator)
@@ -1403,6 +1417,7 @@ function renderDrawer(){
         <div class="dsec-head"><h4>Profile</h4></div>
         <div class="add-inline"><input id="coName" value="${esc(c.name)}" placeholder="Company name"></div>
         <div class="add-inline"><input id="coType" value="${esc(c.type)}" placeholder="Type — e.g. Indigenous — Private E&amp;P"></div>
+        <div class="add-inline"><input id="coSector" list="coSectorOptions" value="${esc(c.sector||'')}" placeholder="Sector — e.g. Oil &amp; Gas — Upstream">${sectorDatalist('coSectorOptions')}</div>
         <textarea class="notes-area" id="coSummary" placeholder="Short profile…">${esc(c.summary)}</textarea>
         <div class="small-btn-row"><button class="btn btn-sm btn-primary" id="saveIdentityBtn">Save details</button></div>
       </div>
@@ -1518,10 +1533,11 @@ function bindDrawer(c){
     const name = document.getElementById('coName').value.trim();
     if (!name){ toast('Name required'); return; }
     const type = document.getElementById('coType').value.trim();
+    const sector = document.getElementById('coSector').value.trim();
     const summary = document.getElementById('coSummary').value.trim();
     try{
-      await companiesApi.updateIdentity(c.id, {name, type, summary});
-      c.name = name; c.type = type; c.summary = summary;
+      await companiesApi.updateIdentity(c.id, {name, type, summary, sector});
+      c.name = name; c.type = type; c.sector = sector; c.summary = summary;
       toast('Details saved'); renderApp(); openDrawer(c.id);
     }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
   });
@@ -2727,6 +2743,7 @@ function logActivity(action, detail){
 
 function renderSettings(){
   const me = AUTH.profile || {};
+  const isAdmin = me.role === 'admin';
   const deptOpts = ['', ...DEPARTMENTS].map(d=>
     `<option value="${esc(d)}" ${(me.department||'')===d?'selected':''}>${d||'—'}</option>`).join('');
   const team = SETTINGS.profiles;
@@ -2751,25 +2768,59 @@ function renderSettings(){
         <button class="btn btn-sm btn-ghost" id="reloadTeamBtn">Refresh</button>
       </div>
       <p style="font-size:11px;color:var(--muted);margin-bottom:10px;">
-        Everyone who has joined through an invite link. There are no roles — every member can see and edit everything.
+        Everyone who has joined through an invite link. Almost everything stays open to every member — a small admin role only gates category management below (and, in a later phase, RFQ publishing/assignment).
       </p>
       ${firstLoad ? `<div class="empty" style="padding:14px;">Loading…</div>` : `
       <div class="tablewrap">
         <table>
-          <thead><tr><th>Name</th><th>Email</th><th>Department</th><th>Joined</th></tr></thead>
+          <thead><tr><th>Name</th><th>Email</th><th>Department</th><th>Role</th><th>Joined</th>${isAdmin?'<th></th>':''}</tr></thead>
           <tbody>
             ${team.map(t=>`
               <tr>
                 <td class="name-cell">${esc(t.full_name||'—')}${t.id===me.id?' <span class="sub">(you)</span>':''}</td>
                 <td>${esc(t.email||'')}</td>
                 <td>${t.department?`<span class="chip chip-teal">${esc(t.department)}</span>`:'<span class="sub">—</span>'}</td>
+                <td>${t.role==='admin'?'<span class="chip chip-gold">Admin</span>':'<span class="sub">Member</span>'}</td>
                 <td class="sub">${t.created_at?new Date(t.created_at).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):''}</td>
+                ${isAdmin?`<td style="text-align:right;white-space:nowrap;">${t.id!==me.id?`<button class="btn btn-sm" data-toggle-role="${t.id}" data-next-role="${t.role==='admin'?'member':'admin'}">${t.role==='admin'?'Make member':'Make admin'}</button>`:''}</td>`:''}
               </tr>
             `).join('')}
           </tbody>
         </table>
       </div>
       ${team.length===0?`<div class="empty">${ICONS.empty}<div>No members yet.</div></div>`:''}`}
+    </div>
+
+    <div class="card panel">
+      <div class="row" style="justify-content:space-between;margin-bottom:12px;">
+        <h3 style="margin-bottom:0;">Product & service categories</h3>
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-bottom:10px;">
+        The controlled list Store items (a later phase) will be tagged against — kept to what Aerosub actually offers.
+        ${isAdmin?'':'Only admins can add, rename or remove categories.'}
+      </p>
+      <div class="row" style="gap:24px;align-items:flex-start;flex-wrap:wrap;">
+        <div style="flex:1;min-width:220px;">
+          <h4 style="margin-bottom:8px;">Products</h4>
+          ${DATA.settings.productCategories.map(cat=>`
+            <div class="bullet solution" style="align-items:center;">
+              <span style="flex:1;">${esc(cat.name)}</span>
+              ${isAdmin?`<button class="btn btn-sm btn-ghost" data-rename-category="product:${cat.id}" data-cat-name="${esc(cat.name)}">Rename</button><button class="x" data-del-category="product:${cat.id}">${ICONS.x}</button>`:''}
+            </div>`).join('')}
+          ${DATA.settings.productCategories.length===0?`<div class="empty" style="padding:12px;">${ICONS.empty}<div>None yet.</div></div>`:''}
+          ${isAdmin?`<div class="add-inline"><input id="newProductCat" placeholder="Add a product category…"><button class="btn btn-sm" id="addProductCatBtn">${ICONS.plus}</button></div>`:''}
+        </div>
+        <div style="flex:1;min-width:220px;">
+          <h4 style="margin-bottom:8px;">Services</h4>
+          ${DATA.settings.serviceCategories.map(cat=>`
+            <div class="bullet solution" style="align-items:center;">
+              <span style="flex:1;">${esc(cat.name)}</span>
+              ${isAdmin?`<button class="btn btn-sm btn-ghost" data-rename-category="service:${cat.id}" data-cat-name="${esc(cat.name)}">Rename</button><button class="x" data-del-category="service:${cat.id}">${ICONS.x}</button>`:''}
+            </div>`).join('')}
+          ${DATA.settings.serviceCategories.length===0?`<div class="empty" style="padding:12px;">${ICONS.empty}<div>None yet.</div></div>`:''}
+          ${isAdmin?`<div class="add-inline"><input id="newServiceCat" placeholder="Add a service category…"><button class="btn btn-sm" id="addServiceCatBtn">${ICONS.plus}</button></div>`:''}
+        </div>
+      </div>
     </div>
 
     <div class="card panel">
@@ -2862,7 +2913,7 @@ function bindSettingsControls(){
         fullName: document.getElementById('profName').value,
         department: document.getElementById('profDept').value,
       });
-      AUTH.profile = updated;
+      AUTH.profile = {...AUTH.profile, ...updated}; // merge: updateMyProfile() doesn't return `role`
       const i = SETTINGS.profiles.findIndex(x=>x.id===updated.id);
       if (i>=0) SETTINGS.profiles[i] = {...SETTINGS.profiles[i], ...updated};
       renderApp(); toast('Profile saved');
@@ -2882,6 +2933,53 @@ function bindSettingsControls(){
       try{ await invitesApi.revoke(b.dataset.revokeInvite); toast('Invite revoked'); reloadSettingsData(); }
       catch(e){ toast('Could not revoke'); }
     }, 'Revoke');
+  }));
+
+  document.querySelectorAll('[data-toggle-role]').forEach(b=>b.addEventListener('click', ()=>{
+    const id = b.dataset.toggleRole; const next = b.dataset.nextRole;
+    openConfirmModal(next==='admin' ? 'Make this member an admin?' : 'Remove admin from this member?', async ()=>{
+      try{
+        await profilesApi.setRole(id, next);
+        const t = SETTINGS.profiles.find(x=>x.id===id); if (t) t.role = next;
+        renderView(); toast('Role updated');
+      }catch(e){ toast('Could not update role — ' + (e.message || 'try again')); }
+    }, next==='admin' ? 'Make admin' : 'Make member');
+  }));
+
+  document.getElementById('addProductCatBtn')?.addEventListener('click', async ()=>{
+    const inp = document.getElementById('newProductCat');
+    const name = inp.value.trim();
+    if (!name) return;
+    try{
+      const saved = await categoriesApi.create('product', name);
+      DATA.settings.productCategories.push(saved);
+      inp.value=''; renderView(); toast('Category added');
+    }catch(e){ toast('Could not add — ' + (e.message || 'try again')); }
+  });
+  document.getElementById('addServiceCatBtn')?.addEventListener('click', async ()=>{
+    const inp = document.getElementById('newServiceCat');
+    const name = inp.value.trim();
+    if (!name) return;
+    try{
+      const saved = await categoriesApi.create('service', name);
+      DATA.settings.serviceCategories.push(saved);
+      inp.value=''; renderView(); toast('Category added');
+    }catch(e){ toast('Could not add — ' + (e.message || 'try again')); }
+  });
+  document.querySelectorAll('[data-rename-category]').forEach(b=>b.addEventListener('click', ()=>{
+    const [kind, id] = b.dataset.renameCategory.split(':');
+    openRenameCategoryModal(kind, id, b.dataset.catName);
+  }));
+  document.querySelectorAll('[data-del-category]').forEach(b=>b.addEventListener('click', ()=>{
+    const [kind, id] = b.dataset.delCategory.split(':');
+    openConfirmModal('Remove this category?', async ()=>{
+      try{
+        await categoriesApi.remove(kind, id);
+        const key = kind==='product' ? 'productCategories' : 'serviceCategories';
+        DATA.settings[key] = DATA.settings[key].filter(c=>c.id!==id);
+        renderView(); toast('Category removed');
+      }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+    }, 'Remove');
   }));
 
   document.getElementById('addConnectorBtn').addEventListener('click', openAddConnectorModal);
@@ -2972,6 +3070,30 @@ function openInviteLinkModal(link){
     };
   });
 }
+function openRenameCategoryModal(kind, id, currentName){
+  openModal(`
+    <h3>Rename category</h3>
+    <div class="field"><label>Name</label><input id="mName" value="${esc(currentName)}"></div>
+    <div class="modal-actions">
+      <button class="btn" id="mCancel">Cancel</button>
+      <button class="btn btn-primary" id="mSave">Save</button>
+    </div>
+  `, body=>{
+    body.querySelector('#mCancel').onclick = closeModal;
+    body.querySelector('#mSave').onclick = async ()=>{
+      const name = body.querySelector('#mName').value.trim();
+      if (!name){ toast('Name required'); return; }
+      const save = body.querySelector('#mSave'); save.disabled = true;
+      try{
+        await categoriesApi.rename(kind, id, name);
+        const list = kind==='product' ? DATA.settings.productCategories : DATA.settings.serviceCategories;
+        const cat = list.find(c=>c.id===id); if (cat) cat.name = name;
+        closeModal(); renderApp(); toast('Category renamed');
+      }catch(e){ toast('Could not rename — ' + (e.message || 'try again')); save.disabled = false; }
+    };
+  });
+}
+
 function openAddConnectorModal(){
   openModal(`
     <h3>Add connector / data source</h3>
@@ -3474,6 +3596,7 @@ function openAddCompanyModal(){
     <h3>New account</h3>
     <div class="field"><label>Company name</label><input id="mName"></div>
     <div class="field"><label>Type</label><input id="mType" placeholder="e.g. Indigenous — Private E&P"></div>
+    <div class="field"><label>Sector</label><input id="mSector" list="mSectorOptions" placeholder="e.g. Oil &amp; Gas — Upstream">${sectorDatalist('mSectorOptions')}</div>
     <div class="field"><label>Summary</label><textarea id="mSummary" placeholder="Short profile…"></textarea></div>
     <div class="field"><label>Priority</label><select id="mPriority">${PRIORITIES.map(p=>`<option value="${p}">${p}</option>`).join('')}</select></div>
     <div class="modal-actions">
@@ -3488,6 +3611,7 @@ function openAddCompanyModal(){
       const save = body.querySelector('#mSave'); save.disabled = true;
       const company = {
         id: crypto.randomUUID(), name, type: body.querySelector('#mType').value.trim()||'Uncategorised',
+        sector: body.querySelector('#mSector').value.trim(),
         priority: body.querySelector('#mPriority').value, stage:'research',
         summary: body.querySelector('#mSummary').value.trim(),
         painPoints:[], currentSolutions:[],

@@ -4,24 +4,34 @@ import {
   companyFromRow, companyToRow, flagFromRow, contactFromRow, contactToRow, recommendedFromRow,
   productFromRow, productToRow, taskFromRow, competitorFromRow, competitorToRow, campaignFromRow, campaignToRow,
   newsFromRow, newsToRow, researchFromRow, eventFromRow, eventToRow, attendeeFromRow, attendeeToRow,
-  connectorFromRow, activityFromRow,
+  connectorFromRow, activityFromRow, categoryFromRow,
 } from './store.js';
 
 describe('companies', () => {
   it('round-trips the fields companyToRow writes', () => {
     const app = {
       id: 'seplat', name: 'Seplat Energy Plc', type: 'Indigenous', priority: 'high', stage: 'contact',
+      sector: 'Oil & Gas — Upstream',
       summary: 'A summary', notes: 'Some notes',
       painPoints: ['pain one', 'pain two'], currentSolutions: ['vendor x'],
     };
     const row = companyToRow(app);
     expect(row.pain_points).toEqual(app.painPoints);
     expect(row.current_solutions).toEqual(app.currentSolutions);
+    expect(row.sector).toBe(app.sector);
     const back = companyFromRow({ id: app.id, ...row });
     expect(back.name).toBe(app.name);
     expect(back.painPoints).toEqual(app.painPoints);
     expect(back.currentSolutions).toEqual(app.currentSolutions);
     expect(back.stage).toBe('contact');
+    expect(back.sector).toBe(app.sector);
+  });
+
+  it('defaults sector to "" when missing (companyToRow nulls it; companyFromRow blanks it)', () => {
+    const row = companyToRow({ name: 'X' });
+    expect(row.sector).toBeNull();
+    const back = companyFromRow({ id: 'x', name: 'X', sector: null });
+    expect(back.sector).toBe('');
   });
 
   it('defaults text[] columns to [] when the DB returns null', () => {
@@ -216,5 +226,12 @@ describe('connectors + activity log', () => {
   it('falls back to "Unattributed" when actor_name is null', () => {
     const a = activityFromRow({ id: 'act2', created_at: '2026-01-01T00:00:00Z', actor_name: null, action: 'Did a thing', detail: null });
     expect(a.user).toBe('Unattributed');
+  });
+});
+
+describe('categories (V2 Phase 0 — same shape for product_categories and service_categories)', () => {
+  it('maps a category row', () => {
+    const c = categoryFromRow({ id: 'drone-uav-systems', name: 'Drone/UAV Systems', created_at: '2026-01-01', updated_at: '2026-01-01' });
+    expect(c).toEqual({ id: 'drone-uav-systems', name: 'Drone/UAV Systems' });
   });
 });

@@ -73,7 +73,7 @@ export async function myProfile() {
   if (!uid) return null;
   const { data, error } = await supabase
     .from('profiles')
-    .select('id, email, full_name, department')
+    .select('id, email, full_name, department, role')
     .eq('id', uid)
     .maybeSingle();
   if (error) return null;
@@ -114,11 +114,13 @@ export async function updateMyProfile({ fullName, department }) {
   return data;
 }
 
-// Everyone with a profile can see the team (Settings), no roles (PRD §3).
+// Everyone with a profile can see the team (Settings). PRD §3 kept this flat
+// (no roles); V2 Phase 0 adds a narrow `role` column back for a few gates —
+// see PRD-v2.md. Every member can still read every profile, incl. role.
 export async function listProfiles() {
   const { data, error } = await supabase
     .from('profiles')
-    .select('id, email, full_name, department, created_at')
+    .select('id, email, full_name, department, role, created_at')
     .order('created_at', { ascending: true });
   if (error) throw error;
   return data || [];

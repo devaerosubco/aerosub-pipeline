@@ -55,3 +55,9 @@ PDF/DOCX, forecasting, full-text search, realtime) is designed out in
 > build. The app is being rebuilt on Supabase (real accounts, one shared
 > database, RLS) on the `supabase-rebuild` branch — see [PRD.md](PRD.md) and
 > [TASKS.md](TASKS.md). This README is rewritten in HT15 (Deployment).
+
+## V2
+
+A second round of features (Store catalog, Create/quotes, RFQ Manager,
+personal/general visibility, Analytics, alerts, RSS) is being built the same
+way V1 was — see [PRD-v2.md](PRD-v2.md) and [TASKS-v2.md](TASKS-v2.md).
