@@ -1,7 +1,8 @@
 // Builds the extension into chrome-extension/dist/ — an IIFE popup.js with
-// @supabase/supabase-js inlined, the public config baked in from the repo
-// .env, and a manifest whose host_permissions point at that Supabase origin.
-//   node chrome-extension/build.mjs
+// @supabase/supabase-js inlined, the public config baked in from an env file,
+// and a manifest whose host_permissions point at that Supabase origin.
+//   node chrome-extension/build.mjs                          — uses repo .env (local dev)
+//   node chrome-extension/build.mjs chrome-extension/.env.production — prod build, for the shareable zip
 import { build } from "vite";
 import { readFileSync, writeFileSync, copyFileSync, mkdirSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -9,15 +10,16 @@ import { fileURLToPath } from "node:url";
 const dir = fileURLToPath(new URL(".", import.meta.url));
 const root = fileURLToPath(new URL("..", import.meta.url));
 
+const envFile = process.argv[2] || root + "/.env";
 const env = {};
-for (const line of readFileSync(root + "/.env", "utf8").split("\n")) {
+for (const line of readFileSync(envFile, "utf8").split("\n")) {
   const m = line.match(/^\s*(VITE_[A-Z_]+)\s*=\s*(.*?)\s*$/);
   if (m) env[m[1]] = m[2];
 }
 const url = env.VITE_SUPABASE_URL;
 const anon = env.VITE_SUPABASE_ANON_KEY;
 if (!url || !anon) {
-  console.error("Missing VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY in .env");
+  console.error(`Missing VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY in ${envFile}`);
   process.exit(1);
 }
 

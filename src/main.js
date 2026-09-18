@@ -632,6 +632,7 @@ const ui = {
   companyFilter:{priority:'', stage:''},
   competitorFilter:{modality:'', threat:''},
   search:'',
+  contactsCollapsed:new Set(),
   drawerKind:null,        // 'company' | 'product' | 'competitor' | 'event' | null
   drawerCompanyId:null,
   drawerProductId:null,
@@ -1119,20 +1120,24 @@ function openManageNewsModal(){
       Add items by hand as you spot them (news, LinkedIn posts, press releases). A "Live" tag marks anything a future automated feed job would add — no such job runs yet${(DATA.settings&&DATA.settings.lastNewsRefresh)?` (last refreshed ${fmtDate(DATA.settings.lastNewsRefresh.slice(0,10))})`:''}. Removing an item here removes it for everyone.
     </p>
     <div class="field"><label>Headline</label><input id="mTitle"></div>
-    <div class="field"><label>Source</label><input id="mSource" placeholder="e.g. Upstream Online, LinkedIn, company press release"></div>
-    <div class="field"><label>Link</label><input id="mUrl" placeholder="example.com/article"></div>
-    <div class="field"><label>Date</label><input type="date" id="mDate" value="${new Date().toISOString().slice(0,10)}"></div>
-    <div class="field"><label>Relates to</label>
-      <select id="mKind">
-        <option value="company">A company we're following</option>
-        <option value="product">One of our products/offers</option>
-        <option value="">General / other</option>
-      </select>
+    <div class="field-row">
+      <div class="field"><label>Source</label><input id="mSource" placeholder="e.g. Upstream Online, LinkedIn, company press release"></div>
+      <div class="field"><label>Date</label><input type="date" id="mDate" value="${new Date().toISOString().slice(0,10)}"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Link</label><input id="mUrl" placeholder="example.com/article"></div>
+      <div class="field"><label>Relates to</label>
+        <select id="mKind">
+          <option value="company">A company we're following</option>
+          <option value="product">One of our products/offers</option>
+          <option value="">General / other</option>
+        </select>
+      </div>
     </div>
     <div class="field" id="mRefWrap"><label>Which one</label><select id="mRef">${companyOptions}</select></div>
     <div class="modal-actions"><button class="btn btn-primary" id="mAdd" style="width:100%;justify-content:center;">${ICONS.plus} Add to feed</button></div>
     <hr>
-    <div style="max-height:280px;overflow-y:auto;">
+    <div style="max-height:260px;overflow-y:auto;">
       ${items.length===0?`<div class="empty" style="padding:10px;">${ICONS.empty}<div>Nothing in the feed yet.</div></div>`:
         items.map(n=>`
         <div class="news-row">
@@ -1180,7 +1185,7 @@ function openManageNewsModal(){
         closeModal(); renderView(); openManageNewsModal();
       }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); b.disabled = false; }
     }));
-  });
+  }, {wide:true});
 }
 
 /* ============================================================
@@ -1502,17 +1507,7 @@ function bindDrawer(c){
   document.getElementById('drawerCloseBtn').addEventListener('click', closeDrawer);
   document.getElementById('stageSelect').addEventListener('change', e=>setCompanyStage(c, e.target.value, {inDrawer:true}));
   document.getElementById('prioritySelect').addEventListener('change', e=>setCompanyPriority(c, e.target.value));
-  document.getElementById('deleteCompanyBtn').addEventListener('click', ()=>{
-    openConfirmModal(`Remove ${c.name} and all its contacts/tasks? This can't be undone.`, async ()=>{
-      try{
-        await companiesApi.remove(c.id);
-        DATA.companies = DATA.companies.filter(x=>x.id!==c.id);
-        DATA.tasks = DATA.tasks.filter(t=>t.companyId!==c.id);   // tasks.company_id cascades in the DB too
-        logActivity('Removed an account', c.name); closeDrawer(); renderApp();
-        toast('Account removed');
-      }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
-    });
-  });
+  document.getElementById('deleteCompanyBtn').addEventListener('click', ()=> openRemoveAccountModal(c));
 
   document.getElementById('saveIdentityBtn').addEventListener('click', async ()=>{
     const name = document.getElementById('coName').value.trim();
@@ -2224,7 +2219,7 @@ function openAddResearchModal(){
         closeModal(); renderApp(); toast('Clip saved');
       }catch(e){ toast('Could not save — ' + (e.message || 'try again')); save.disabled = false; }
     };
-  });
+  }, {wide:true});
 }
 function doImportResearch(e){
   const file = e.target.files[0];
@@ -3297,22 +3292,42 @@ function filteredContacts(){
 }
 function renderContacts(){
   const rows = filteredContacts().sort((a,b)=> (b.verified-a.verified) || a.name.localeCompare(b.name));
+  const groups = new Map();
+  rows.forEach(ct=>{
+    const co = companyById(ct.companyId);
+    const key = co ? co.id : '';
+    if (!groups.has(key)) groups.set(key, {company: co, contacts: []});
+    groups.get(key).contacts.push(ct);
+  });
+  const sortedGroups = [...groups.values()].sort((a,b)=>{
+    if (!a.company) return 1;
+    if (!b.company) return -1;
+    return a.company.name.localeCompare(b.company.name);
+  });
   return `
   <div class="card tablewrap">
     <table>
-      <thead><tr><th>Name</th><th>Company</th><th>Position</th><th>Email</th><th>Phone</th><th>LinkedIn</th><th>Follow-up</th></tr></thead>
+      <thead><tr><th>Name</th><th>Position</th><th>Email</th><th>Phone</th><th>LinkedIn</th><th>Follow-up</th></tr></thead>
       <tbody>
-      ${rows.map(ct=>{
-        const co = companyById(ct.companyId);
-        return `<tr data-open-contact="${ct.id}">
+      ${sortedGroups.map(g=>{
+        const key = g.company ? g.company.id : '__none__';
+        const collapsed = ui.contactsCollapsed.has(key);
+        return `
+        <tr class="group-row${collapsed?' collapsed':''}">
+          <td colspan="6">
+            <span class="group-toggle" data-toggle-group="${key}">${ICONS.chevron}</span>
+            <span class="group-name${g.company?'':' group-name-nolink'}" ${g.company?`data-open-company="${g.company.id}"`:''}>${g.company?esc(g.company.name):'General / not linked to an account'}</span>
+            <span class="cnt">${g.contacts.length}</span>
+          </td>
+        </tr>
+        ${collapsed ? '' : g.contacts.map(ct=>`<tr data-open-contact="${ct.id}">
           <td class="name-cell">${esc(ct.name)} ${ct.verified?`<span class="verified-tick">✓</span>`:''}</td>
-          <td>${co?esc(co.name):''}</td>
           <td><span class="sub">${esc(ct.pos)}</span></td>
           <td>${ct.email?esc(ct.email):'<span class="sub">Not public</span>'}</td>
           <td>${ct.phone?esc(ct.phone):''}</td>
           <td>${ct.linkedin?`<a href="https://${esc(stripProto(ct.linkedin))}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Profile</a>`:''}</td>
           <td>${ct.nextFollowUp?`<span style="color:${isOverdue(ct.nextFollowUp)?'var(--critical)':'var(--ink)'}">${fmtDate(ct.nextFollowUp)}</span>`:'<span class="sub">—</span>'}</td>
-        </tr>`;
+        </tr>`).join('')}`;
       }).join('')}
       </tbody>
     </table>
@@ -3322,6 +3337,17 @@ function renderContacts(){
 function bindContactsControls(){
   document.querySelectorAll('[data-open-contact]').forEach(row=>{
     row.addEventListener('click', ()=>openEditContactModal(row.dataset.openContact));
+  });
+  document.querySelectorAll('.group-name[data-open-company]').forEach(el=>{
+    el.addEventListener('click', (e)=>{ e.stopPropagation(); openDrawer(el.dataset.openCompany); });
+  });
+  document.querySelectorAll('[data-toggle-group]').forEach(el=>{
+    el.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      const key = el.dataset.toggleGroup;
+      if (ui.contactsCollapsed.has(key)) ui.contactsCollapsed.delete(key); else ui.contactsCollapsed.add(key);
+      renderApp();
+    });
   });
 }
 
@@ -3442,10 +3468,12 @@ function bindView(){
 /* ============================================================
    MODALS
    ============================================================ */
-function openModal(html, onMount){
+function openModal(html, onMount, opts){
   const scrim = document.getElementById('modalScrim');
   const body = document.getElementById('modalBody');
-  body.innerHTML = html;
+  body.className = 'modal' + ((opts && opts.wide) ? ' modal-wide' : '');
+  body.innerHTML = `<button class="modal-close" id="modalCloseBtn" aria-label="Close">${ICONS.x}</button>` + html;
+  body.querySelector('#modalCloseBtn').addEventListener('click', closeModal);
   scrim.classList.add('open');
   scrim.onclick = (e)=>{ if(e.target===scrim) closeModal(); };
   if (onMount) onMount(body);
@@ -3466,6 +3494,51 @@ function openConfirmModal(message, onConfirm, confirmLabel){
   `, body=>{
     body.querySelector('#mCancel').onclick = closeModal;
     body.querySelector('#mConfirm').onclick = ()=>{ closeModal(); onConfirm(); };
+  });
+}
+
+// PRD §13: "Remove account" is the one hard-delete that cascades across
+// several tables, so it gets a stronger confirm than openConfirmModal —
+// a breakdown of what's deleted + typing the account name.
+function openRemoveAccountModal(c){
+  const contactCount = DATA.contacts.filter(x=>x.companyId===c.id).length;
+  const taskCount = DATA.tasks.filter(x=>x.companyId===c.id).length;
+  const tagCount = (c.recommended||[]).length;
+  const flagCount = (c.flags||[]).length;
+  const researchCount = DATA.research.filter(x=>x.companyId===c.id).length;
+  openModal(`
+    <h3>Remove ${esc(c.name)}?</h3>
+    <p style="font-size:12.5px;color:var(--muted);line-height:1.6;">This permanently deletes:</p>
+    <ul style="font-size:12.5px;color:var(--muted);line-height:1.8;margin:0 0 10px 18px;">
+      <li>${contactCount} contact${contactCount===1?'':'s'}</li>
+      <li>${taskCount} task${taskCount===1?'':'s'}</li>
+      <li>${tagCount} product tag${tagCount===1?'':'s'}</li>
+      <li>${flagCount} flag${flagCount===1?'':'s'} and its stage history</li>
+    </ul>
+    ${researchCount?`<p style="font-size:12.5px;color:var(--muted);line-height:1.6;">${researchCount} linked research clip${researchCount===1?'':'s'} will be kept, just unlinked from this account.</p>`:''}
+    <p style="font-size:12.5px;color:var(--muted);line-height:1.6;margin-top:8px;">This can't be undone. Type <b>${esc(c.name)}</b> to confirm.</p>
+    <div class="field"><input id="mConfirmName" autocomplete="off" placeholder="${esc(c.name)}"></div>
+    <div class="modal-actions">
+      <button class="btn" id="mCancel">Cancel</button>
+      <button class="btn" id="mConfirm" disabled style="background:var(--critical);border-color:var(--critical);color:#fff;">Remove account</button>
+    </div>
+  `, body=>{
+    const input = body.querySelector('#mConfirmName');
+    const btn = body.querySelector('#mConfirm');
+    input.addEventListener('input', ()=>{ btn.disabled = input.value.trim() !== c.name; });
+    body.querySelector('#mCancel').onclick = closeModal;
+    btn.onclick = async ()=>{
+      if (input.value.trim() !== c.name) return;
+      closeModal();
+      try{
+        await companiesApi.remove(c.id);
+        DATA.companies = DATA.companies.filter(x=>x.id!==c.id);
+        DATA.tasks = DATA.tasks.filter(t=>t.companyId!==c.id);   // tasks.company_id cascades in the DB too
+        logActivity('Removed an account', c.name); closeDrawer(); renderApp();
+        toast('Account removed');
+      }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+    };
+    input.focus();
   });
 }
 

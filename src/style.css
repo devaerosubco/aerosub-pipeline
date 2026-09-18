@@ -513,6 +513,20 @@ tbody tr{cursor:pointer;}
 tbody tr:hover{background:var(--surface-hover);}
 td.name-cell{font-weight:700;}
 td .sub{font-size:11px;color:var(--muted);font-weight:400;}
+tr.group-row{background:var(--surface-hover);cursor:default;}
+tr.group-row td{
+  font-family:var(--font-mono);font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;
+  font-weight:700;color:var(--muted);padding:7px 12px;
+}
+tr.group-row .cnt{font-family:var(--font-mono);font-weight:400;color:var(--faint);margin-left:2px;}
+tr.group-row .group-toggle{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:16px;height:16px;margin-right:2px;cursor:pointer;
+  transform:rotate(90deg);transition:transform .15s ease;vertical-align:-3px;
+}
+tr.group-row.collapsed .group-toggle{transform:rotate(0deg);}
+tr.group-row .group-name[data-open-company]{cursor:pointer;}
+tr.group-row .group-name[data-open-company]:hover{color:var(--ink);text-decoration:underline;}
 
 /* ============================================================
    DRAWER
@@ -708,17 +722,30 @@ td .sub{font-size:11px;color:var(--muted);font-weight:400;}
    ============================================================ */
 .modal-scrim{
   position:fixed;inset:0;background:rgba(6,16,20,.5);z-index:50;
-  display:flex;align-items:center;justify-content:center;padding:20px;
+  display:flex;justify-content:center;padding:20px;
   opacity:0;pointer-events:none;transition:opacity .16s ease;
 }
 .modal-scrim.open{opacity:1;pointer-events:auto;}
 .modal{
+  position:relative;
   background:var(--surface-raised);border-radius:12px;
   width:min(440px,100%);
+  margin:auto 0; /* vertical centering that (unlike align-items:center) still lets a
+    dialog taller than the viewport scroll all the way to its own top — see .modal's
+    own overflow-y below */
+  max-height:calc(100vh - 40px);overflow-y:auto;
   box-shadow:var(--shadow-lg);
   padding:20px 22px;
 }
-.modal h3{font-size:14px;margin-bottom:14px;}
+.modal-wide{width:min(680px,100%);}
+.modal-close{
+  position:absolute;top:14px;right:14px;z-index:1;
+  width:26px;height:26px;padding:0;border:none;border-radius:7px;
+  background:none;color:var(--faint);cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+}
+.modal-close:hover{color:var(--ink);background:var(--surface-hover);}
+.modal h3{font-size:14px;margin-bottom:14px;padding-right:26px;}
 .field{display:flex;flex-direction:column;gap:5px;margin-bottom:12px;}
 .field label{font-size:11px;color:var(--muted);font-weight:600;}
 .field input,.field select,.field textarea{
@@ -726,6 +753,8 @@ td .sub{font-size:11px;color:var(--muted);font-weight:400;}
   background:var(--surface);color:var(--ink);font-size:12.8px;
 }
 .field textarea{resize:vertical;min-height:60px;}
+.field-row{display:flex;gap:12px;}
+.field-row .field{flex:1;min-width:0;}
 .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;}
 
 /* password reveal toggle */
@@ -772,4 +801,5 @@ body:has(.modal-scrim.open) .theme-toggle{display:none;}
   .nav{flex-direction:row;}
   .sidebar-foot{display:none;}
   .dash-grid{grid-template-columns:1fr;}
+  .field-row{flex-direction:column;gap:0;}
 }

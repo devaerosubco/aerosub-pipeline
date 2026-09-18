@@ -365,6 +365,7 @@ Dashboard (stage bar, flags, high-priority, overdue/due-soon, pain themes, news 
 - **D-11** `tasks.company_id` FK is `ON DELETE CASCADE` (matches the prototype; general tasks are `company_id IS NULL`).
 - **D-12** the `LIVE_NEWS_SNAPSHOT` marker block, `mergeLiveNewsSnapshot()`, and the `dismissedNewsIds` array are **deleted** — the DB is the source of news now, and dismissal is `news_items.dismissed_at` (D-5). The V2 news-feed job (§12) writes `news_items` directly.
 - **D-13** (HT0) removed one malformed CSS rule from the prototype — an empty `.flag-critical{}` dark-mode block with a dangling comma-selector before an `@media`. Produced zero styles in any browser; the `lightningcss` build minifier rejects it. Provably a no-op.
+- **D-14** (HT15) **Resend SMTP skipped for launch.** Prod auth runs on Supabase's built-in email (no custom SMTP configured) instead of the Resend/`send.aerosub.co` setup §5.6 specified. All initial team members were invited and confirmed successfully under this setup. Known risk, accepted for now: Supabase's built-in sender is rate-limited (2 emails/hour by default — see `supabase/config.toml` `auth.rate_limit.email_sent`) and not deliverability-guaranteed (no verified sending domain, more likely to land in spam) — it's documented by Supabase as a testing convenience, not a production path. This will bite on **password resets** (multiple close together hit the cap) and **future invites** once the team grows past what fits under the hourly limit. Wiring Resend remains scoped and ready in §5.6 — pick it up before the next onboarding wave or the first reported "didn't get my reset email."
 
 ## 16. Systems-design decisions & rejected alternatives (S-list)
 
@@ -400,7 +401,7 @@ The calls that shape the build — most of them are decisions to keep things *sm
 
 - **OQ-1 (needed for deploy only)** — one **free** Supabase project for prod: URL + anon key + DB password. HT0–HT12 build against local Supabase.
 - **OQ-2** — ✅ invite-link signup.
-- **OQ-3** — ✅ **Resend** (free); verify `send.aerosub.co`. Needed before user #2; local dev needs nothing.
+- **OQ-3** — ⚠️ deferred at launch — see **D-14**. Spec'd as **Resend** (free); verify `send.aerosub.co`. Needed before user #2; local dev needs nothing. Prod is running on Supabase's built-in email in the meantime.
 - **OQ-4** — ✅ the seed is the only dataset; the localStorage importer is optional.
 - **OQ-5** — ✅ `company_stage_changes` ships in V1.
 - **OQ-6** — ✅ Cloudflare Pages.

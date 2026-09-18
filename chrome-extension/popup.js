@@ -45,7 +45,9 @@ async function renderAccount() {
   $("acctSignedOut").style.display = user ? "none" : "block";
   $("acctSignedIn").style.display = user ? "block" : "none";
   if (user) $("acctEmail").textContent = user.email || "(signed in)";
+  $("signedOutHint").style.display = user ? "none" : "block";
   await refreshCounts();
+  return user;
 }
 
 async function doSignIn() {
@@ -245,7 +247,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("copyBtn").addEventListener("click", copyClips);
   $("clearBtn").addEventListener("click", clearClips);
 
-  await renderAccount();
+  const user = await renderAccount();
+  if (!user) switchTab("account"); // signed out: show sign-in first, don't land on the capture form
   await prefillFromActiveTab();
   syncQueue(); // best-effort flush on open
 });

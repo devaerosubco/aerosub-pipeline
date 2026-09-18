@@ -140,10 +140,14 @@ they are not automatable in this environment.
    HTTPS; `curl -I https://<host>` shows every `_headers` entry; DevTools shows
    an injected inline `<script>` refused by CSP; the page won't load in an
    `<iframe>` on another origin.
-4. **Real external email (HT15).** With Resend SMTP configured on the prod
-   project: invite → sign up with a real address → confirmation email arrives →
-   confirm → sign in. (Local uses Mailpit; deliverability to real inboxes can
-   only be checked on prod.)
+4. **Real external email (HT15).** ⚠️ Deviation D-14: Resend SMTP was **not**
+   configured on the prod project — launch runs on Supabase's built-in email
+   instead. Confirmed working for the initial invite batch (all team members
+   signed up and confirmed), but built-in email is rate-limited (2/hour) and
+   has no verified sending domain, so deliverability under load (password
+   resets, future invites) is unproven. Re-test this row once Resend is wired
+   in. (Local uses Mailpit; deliverability to real inboxes can only be checked
+   on prod.)
 5. **Second device (HT15).** Sign in on a second device with a different
    account, add a company, Refresh on the first device → it appears
    (refetch-on-navigate, no realtime — PRD §9).
