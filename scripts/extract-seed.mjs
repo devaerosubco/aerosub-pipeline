@@ -55,8 +55,17 @@ const table = (name, cols, rows) => {
 };
 
 // ---- products (prototype `solutions`) ------------------------------------
-table('products', ['id', 'name', 'tag', 'kind', 'status', 'blurb', 'highlights'],
-  d.solutions.map((s) => [q(s.id), q(s.name), q(s.tag), q(s.kind), q(s.status), q(s.blurb), arr(s.highlights)]));
+// category_id isn't part of the prototype's seedData() (a V2 HT-B-only
+// column) — mapped here to mirror the same product-id -> category-id
+// backfill the 20260917130001 migration does for an already-seeded DB.
+// products.category_id is NOT NULL, so every id needs an entry (falls back
+// to 'other' if a future product id isn't in this map).
+const PRODUCT_CATEGORY_ID = {
+  drone: 'drone-uav-systems', rov: 'rov-systems', crawler: 'crawler-systems',
+  cleaning: 'cleaning-equipment', platform: 'inspection-platforms', surveillance: 'surveillance-systems',
+};
+table('products', ['id', 'name', 'tag', 'kind', 'status', 'blurb', 'highlights', 'category_id'],
+  d.solutions.map((s) => [q(s.id), q(s.name), q(s.tag), q(s.kind), q(s.status), q(s.blurb), arr(s.highlights), q(PRODUCT_CATEGORY_ID[s.id] || 'other')]));
 
 // ---- companies ----------------------------------------------------------
 for (const c of d.companies) if (!stageIds.has(c.stage)) problems.push(`company ${c.id}: bad stage "${c.stage}"`);
