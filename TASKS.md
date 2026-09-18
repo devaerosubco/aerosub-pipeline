@@ -305,6 +305,35 @@ Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema
 
 ---
 
+## 17. Code Quality & UX Hardening (post-launch review pass)
+
+**Why:** a post-HT15 senior-engineer-style pass over the whole codebase (not a diff review) surfaced real, cheap-to-fix gaps in accessibility, perf, code duplication, and test coverage that no Heavy Task owned. Two items from that review were deliberately **declined** rather than actioned — see the note below the checklist.
+
+**Acceptance criteria:** each box below is independently shippable (no cross-dependencies) and must not regress `npx vitest run` / `npm run build` / `npm run check:secrets`.
+
+- [x] Debounce the search input (`src/main.js:876`) — currently triggers a full `renderView()` per keystroke.
+  - ↳ note: new `debounce()` helper next to `esc()`; 150ms. `renderView()` only touches `#viewMount`, not the search box itself, so no focus-loss risk.
+- [x] Index tasks by `companyId` once per board render instead of `.filter()`-per-card in `renderKCard`/`renderBoard` (`src/main.js:1226-1240`) — same fix for the dashboard's `dueSoon` → `companyChip` → `companyById` lookup chain (`main.js:1057-1061`, `769`).
+  - ↳ note: `renderBoard` now builds one `Map` (`indexNextOpenTaskByCompany`) instead of `renderKCard` filtering `DATA.tasks` per card. `companyChip` takes an optional `Map` (dashboard passes one built once at the top of `renderDashboard`); its only other caller (none) unaffected — falls back to the old `companyById` lookup if omitted.
+- [x] Modal: Escape-to-close + a basic focus trap + focus-restore on close (`openModal`/`closeModal`, `main.js:3471-3481`).
+  - ↳ note: `openModal` remembers `document.activeElement`, focuses the modal's first focusable element (or the close button) once mounted — unless `onMount` already focused something more specific, which every caller that needs it still does (e.g. `openRemoveAccountModal`'s confirm-name input). `closeModal` restores focus to whatever opened it. One module-level `keydown` listener (Escape closes; Tab/Shift+Tab traps focus inside `#modalBody`) — added once, gated on `#modalScrim.open`, so it's a no-op the rest of the time.
+- [x] Make kanban cards and table rows keyboard-operable: `tabindex="0"` + Enter/Space to open, visible focus style (currently mouse/click-only beyond native `<button>`/`<a>`).
+  - ↳ note: one generic `makeKeyboardClickable(root)` (next to `debounce`) — gives every `[data-open-company/contact/product/competitor/event]`, `[data-toggle-group]` and `.kcard` a tab stop + `role="button"` (if not already a native control) and re-fires its own click handler via `el.click()` on Enter/Space, rather than hand-wiring keydown logic at each of the ~20 existing click-binding call sites. Called from `bindView()` (every view), `bindDrawer()` (scoped to `#drawer`), and `openModal()` (scoped to the modal body). `:focus-visible` styling already existed globally (`style.css:129`) so no new CSS needed.
+- [x] Icon-only buttons / logo images: audit + fill in missing `aria-label`/`alt` (only 6 `aria-*` and 2 `alt=` exist across all of `main.js` today).
+  - ↳ note: every icon-only `<button class="x">` (remove pain point/current-solution/tag/task/highlight/campaign/clip/attendee/connector/news item), the 4 `drawer-close` buttons, the "add X" icon buttons, and the contacts group-toggle chevron now have a contextual `aria-label` (e.g. "Remove pain point: <text>", not just "Remove"). Logo `alt=` and the theme-toggle button were already covered. Buttons that already show visible text next to their icon (e.g. "Add contact") were left alone — they already have an accessible name.
+- [ ] Centralize the 54× repeated `'Could not ' + verb + ' — ' + (e.message || 'try again')` toast string into one helper.
+- [ ] Visible loading indicator on view refresh (`refreshCurrentView`, `main.js:911`) — currently silent; only first boot shows "Loading…".
+- [ ] Distinguish "filtered to zero results" from "no data yet" in the 13 empty-states (`main.js` — e.g. `1262,1872,3334`) so clearing a filter is obviously the fix when that's the cause.
+- [ ] Shared `openCreateModal(fields, api, arrayKey)` helper to collapse the ~250 lines of duplicated create/save/toast boilerplate across `openAddCompanyModal`/`openAddContactModal`/`openAddTaskModal`/`openAddSolutionModal`/`openAddCompetitorModal`/`openAddEventModal` (`main.js:3545,3577,3711,3745,2046,2593`). Do this **last**, after the smaller items land, and re-run every relevant `test:*` script afterward — highest blast radius of this batch.
+- [ ] Persistent regression coverage for the views with none today: Contacts, Competition, Plan, Products, Reports (`scripts/` currently only persists auth/security/cross-browser tests — every prior per-Heavy-Task browser test for these views was written once and deleted). New script(s) modeled on `scripts/crossbrowser-smoke.mjs`'s pattern, wired to a `npm run test:*` script, kept (not deleted after use). This is the highest-value item in this batch — it's what would have caught the HT6 `source_url`→`url` mapping bug.
+
+**Declined (reviewed, not doing):**
+- Paginating `loadAll()`'s company/contact/task/etc. fetches — the kanban board and tables are designed to show the whole dataset at once; paginating would break that, not fix a real problem at this app's intended scale (PRD: ~10-20 accounts, one team). Left as-is.
+- A "Retry" affordance on error toasts — would touch all ~127 `toast()` call sites for a real interaction-model change that cuts against the app's deliberate "no optimistic UI, keep it simple" design (PRD §16). Re-clicking the action already works. Left as-is.
+- Bundle size (390 kB / 110 kB gzip, almost entirely `@supabase/supabase-js`) — no low-risk lever available (would mean changing how the Supabase client is imported); not worth it for an internal tool used by one team.
+
+---
+
 ## Final Report (Step 5) — when HT0–16 are all `[x]`
 
 - What was built:

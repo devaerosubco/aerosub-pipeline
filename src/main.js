@@ -695,6 +695,27 @@ function daysUntil(iso){
 function esc(s){
   return String(s==null?'':s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
+function debounce(fn, ms){
+  let t;
+  return (...args)=>{ clearTimeout(t); t = setTimeout(()=>fn(...args), ms); };
+}
+// Custom clickable widgets (kanban cards, table rows, inline chips/links) are
+// plain divs/trs/spans with a click listener elsewhere — this gives each one
+// a tab stop + role (if it isn't already a native control) and re-fires its
+// own click handler on Enter/Space, instead of duplicating activation logic
+// at every call site. Marking each element once makes re-running this at
+// several bind sites in the same render harmless.
+function makeKeyboardClickable(root=document){
+  root.querySelectorAll('[data-open-company],[data-open-contact],[data-open-product],[data-open-competitor],[data-open-event],[data-toggle-group],.kcard').forEach(el=>{
+    if (el.dataset.kbdWired) return;
+    el.dataset.kbdWired = '1';
+    if (!el.hasAttribute('tabindex')) el.tabIndex = 0;
+    if (!el.hasAttribute('role') && el.tagName!=='BUTTON' && el.tagName!=='A') el.setAttribute('role','button');
+    el.addEventListener('keydown', e=>{
+      if (e.key==='Enter' || e.key===' '){ e.preventDefault(); el.click(); }
+    });
+  });
+}
 
 /* ============================================================
    THEME — light/dark toggle. The prototype already had CSS
@@ -873,7 +894,7 @@ function bindShell(){
   if (refreshAllBtn) refreshAllBtn.addEventListener('click', doRefreshAll);
   const search = document.getElementById('searchInput');
   if (search){
-    search.addEventListener('input', e=>{ ui.search = e.target.value; renderView(); });
+    search.addEventListener('input', debounce(e=>{ ui.search = e.target.value; renderView(); }, 150));
   }
   const signOutBtn = document.getElementById('signOutBtn');
   if (signOutBtn) signOutBtn.addEventListener('click', async ()=>{
@@ -957,6 +978,7 @@ function renderView(){
    DASHBOARD
    ============================================================ */
 function renderDashboard(){
+  const companiesById = new Map(DATA.companies.map(c=>[c.id, c]));
   const total = DATA.companies.length;
   const byStage = STAGES.map(s=>({...s, count: DATA.companies.filter(c=>c.stage===s.id).length}));
   const contactsCount = DATA.companies.reduce((a,c)=>a+c.contacts.length,0);
@@ -1021,7 +1043,7 @@ function renderDashboard(){
           ${dueSoon.length===0 ? `<div class="empty">${ICONS.empty}<div>Nothing due this week.</div></div>` :
             dueSoon.map(t=>`
               <div class="needs-row" data-open-company="${t.companyId||''}">
-                <span>${companyChip(t.companyId)}</span>
+                <span>${companyChip(t.companyId, companiesById)}</span>
                 <span class="t">${esc(t.title)}</span>
                 <span class="d">${fmtDate(t.due)}</span>
               </div>
@@ -1054,9 +1076,9 @@ function renderDashboard(){
     </div>
   `;
 }
-function companyChip(id){
+function companyChip(id, byId){
   if(!id) return '<span class="chip chip-low">General</span>';
-  const c = companyById(id);
+  const c = byId ? byId.get(id) : companyById(id);
   if(!c) return '';
   return `<span class="chip chip-teal">${esc(c.name)}</span>`;
 }
@@ -1145,7 +1167,7 @@ function openManageNewsModal(){
             <div class="t">${n.live?`<span class="ti-live" style="margin-right:6px;">Live</span>`:''}${esc(n.title)}</div>
             <div class="m">${fmtDate(n.date)} · ${esc(n.source)} ${newsRefLabel(n)?'· '+esc(newsRefLabel(n)):''}</div>
           </div>
-          <button class="x" data-del-news="${n.id}" style="background:none;border:none;color:var(--faint);cursor:pointer;">${ICONS.x}</button>
+          <button class="x" data-del-news="${n.id}" aria-label="Remove ${esc(n.title)} from the feed" style="background:none;border:none;color:var(--faint);cursor:pointer;">${ICONS.x}</button>
         </div>
       `).join('')}
     </div>
@@ -1224,20 +1246,31 @@ function renderCompanies(){
 }
 
 function renderBoard(list){
+  const nextTaskByCompany = indexNextOpenTaskByCompany();
   return `<div class="board">
     ${STAGES.map(stage=>{
       const items = list.filter(c=>c.stage===stage.id);
       return `
       <div class="col" data-stage="${stage.id}">
         <div class="col-head"><span class="dot" style="background:${stage.dot}"></span><span class="name">${stage.label}</span><span class="count tabular">${items.length}</span></div>
-        ${items.map(c=>renderKCard(c)).join('')}
+        ${items.map(c=>renderKCard(c, nextTaskByCompany.get(c.id))).join('')}
       </div>`;
     }).join('')}
   </div>`;
 }
 
-function renderKCard(c){
-  const nextTask = DATA.tasks.filter(t=>t.companyId===c.id && !t.done).sort((a,b)=>a.due.localeCompare(b.due))[0];
+// One pass over DATA.tasks instead of a per-card DATA.tasks.filter() — matters
+// once companies × tasks grows (renderBoard runs on every render: drag, filter, search).
+function indexNextOpenTaskByCompany(){
+  const map = new Map();
+  DATA.tasks
+    .filter(t=>t.companyId && !t.done)
+    .sort((a,b)=>a.due.localeCompare(b.due))
+    .forEach(t=>{ if (!map.has(t.companyId)) map.set(t.companyId, t); });
+  return map;
+}
+
+function renderKCard(c, nextTask){
   return `
     <div class="kcard" draggable="true" data-company="${c.id}">
       <div class="row" style="justify-content:space-between;">
@@ -1387,7 +1420,7 @@ function renderDrawer(){
   const tasks = DATA.tasks.filter(t=>t.companyId===c.id).sort((a,b)=>(a.done-b.done)|| a.due.localeCompare(b.due));
 
   drawer.innerHTML = `
-    <button class="drawer-close" id="drawerCloseBtn">${ICONS.x}</button>
+    <button class="drawer-close" id="drawerCloseBtn" aria-label="Close">${ICONS.x}</button>
     <div class="drawer-head">
       <div class="eyebrow">${esc(c.type)}</div>
       <h2>${esc(c.name)}</h2>
@@ -1415,17 +1448,17 @@ function renderDrawer(){
       <div class="dsec">
         <div class="dsec-head"><h4>Pain points & inspection challenges</h4></div>
         <div class="bullets" id="painList">
-          ${c.painPoints.map((p,i)=>`<div class="bullet pain"><span>${esc(p)}</span><button class="x" data-del-pain="${i}">${ICONS.x}</button></div>`).join('')}
+          ${c.painPoints.map((p,i)=>`<div class="bullet pain"><span>${esc(p)}</span><button class="x" data-del-pain="${i}" aria-label="Remove pain point: ${esc(p)}">${ICONS.x}</button></div>`).join('')}
         </div>
-        <div class="add-inline"><input id="newPain" placeholder="Add a pain point…"><button class="btn btn-sm" id="addPainBtn">${ICONS.plus}</button></div>
+        <div class="add-inline"><input id="newPain" placeholder="Add a pain point…"><button class="btn btn-sm" id="addPainBtn" aria-label="Add pain point">${ICONS.plus}</button></div>
       </div>
 
       <div class="dsec">
         <div class="dsec-head"><h4>Current solutions / tech in place</h4></div>
         <div class="bullets" id="curList">
-          ${c.currentSolutions.map((p,i)=>`<div class="bullet solution"><span>${esc(p)}</span><button class="x" data-del-cur="${i}">${ICONS.x}</button></div>`).join('')}
+          ${c.currentSolutions.map((p,i)=>`<div class="bullet solution"><span>${esc(p)}</span><button class="x" data-del-cur="${i}" aria-label="Remove current solution: ${esc(p)}">${ICONS.x}</button></div>`).join('')}
         </div>
-        <div class="add-inline"><input id="newCur" placeholder="Add current solution / vendor…"><button class="btn btn-sm" id="addCurBtn">${ICONS.plus}</button></div>
+        <div class="add-inline"><input id="newCur" placeholder="Add current solution / vendor…"><button class="btn btn-sm" id="addCurBtn" aria-label="Add current solution">${ICONS.plus}</button></div>
       </div>
 
       <div class="dsec">
@@ -1436,7 +1469,7 @@ function renderDrawer(){
             return `<div class="rec-card">
               <div class="row" style="justify-content:space-between;">
                 <div class="rname" ${sol?`data-open-product="${sol.id}" style="cursor:pointer;"`:''}>${sol?esc(sol.name):'(removed)'}</div>
-                <button class="x" data-del-rec="${i}" style="background:none;border:none;color:var(--teal-strong);cursor:pointer;">${ICONS.x}</button>
+                <button class="x" data-del-rec="${i}" aria-label="Untag ${sol?esc(sol.name):'this product'}" style="background:none;border:none;color:var(--teal-strong);cursor:pointer;">${ICONS.x}</button>
               </div>
               <div class="rwhy">${esc(r.why)}</div>
             </div>`;
@@ -1464,7 +1497,7 @@ function renderDrawer(){
                 <div class="t">${esc(t.title)}</div>
                 <div class="meta ${!t.done && isOverdue(t.due)?'overdue':''}">${t.due?('Due '+fmtDate(t.due)):'No date'} · ${t.priority}</div>
               </div>
-              <button class="x" data-del-task="${t.id}" style="background:none;border:none;color:var(--faint);cursor:pointer;">${ICONS.x}</button>
+              <button class="x" data-del-task="${t.id}" aria-label="Remove action: ${esc(t.title)}" style="background:none;border:none;color:var(--faint);cursor:pointer;">${ICONS.x}</button>
             </div>
           `).join('')}
         <button class="btn btn-sm" id="addTaskInline" style="margin-top:8px;">${ICONS.plus} Add action</button>
@@ -1606,6 +1639,7 @@ function bindDrawer(c){
     try{ await companiesApi.setNotes(c.id, notes); c.notes = notes; toast('Notes saved'); }
     catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
   });
+  makeKeyboardClickable(document.getElementById('drawer'));
 }
 
 function findContact(id){
@@ -1642,7 +1676,7 @@ function renderProductDrawer(){
   const highlights = p.highlights || [];
 
   drawer.innerHTML = `
-    <button class="drawer-close" id="drawerCloseBtn">${ICONS.x}</button>
+    <button class="drawer-close" id="drawerCloseBtn" aria-label="Close">${ICONS.x}</button>
     <div class="drawer-head">
       <div class="eyebrow">${esc(p.tag||'General')} · ${esc(p.kind||'Product')}</div>
       <h2>${esc(p.name)}</h2>
@@ -1670,9 +1704,9 @@ function renderProductDrawer(){
         <div class="dsec-head"><h4>Highlights & capabilities</h4></div>
         <div class="bullets" id="hlList">
           ${highlights.length===0 ? `<div class="empty" style="padding:12px;">${ICONS.empty}<div>No highlights yet.</div></div>` :
-            highlights.map((h,i)=>`<div class="bullet solution"><span>${esc(h)}</span><button class="x" data-del-hl="${i}">${ICONS.x}</button></div>`).join('')}
+            highlights.map((h,i)=>`<div class="bullet solution"><span>${esc(h)}</span><button class="x" data-del-hl="${i}" aria-label="Remove highlight: ${esc(h)}">${ICONS.x}</button></div>`).join('')}
         </div>
-        <div class="add-inline"><input id="newHl" placeholder="Add a highlight or capability…"><button class="btn btn-sm" id="addHlBtn">${ICONS.plus}</button></div>
+        <div class="add-inline"><input id="newHl" placeholder="Add a highlight or capability…"><button class="btn btn-sm" id="addHlBtn" aria-label="Add highlight">${ICONS.plus}</button></div>
       </div>
 
       <div class="dsec">
@@ -1682,7 +1716,7 @@ function renderProductDrawer(){
             <div class="rec-card">
               <div class="row" style="justify-content:space-between;">
                 <div class="rname" data-open-company="${row.company.id}" style="cursor:pointer;">${esc(row.company.name)}</div>
-                <button class="x" data-untag="${row.company.id}" style="background:none;border:none;color:var(--teal-strong);cursor:pointer;">${ICONS.x}</button>
+                <button class="x" data-untag="${row.company.id}" aria-label="Untag from ${esc(row.company.name)}" style="background:none;border:none;color:var(--teal-strong);cursor:pointer;">${ICONS.x}</button>
               </div>
               <div class="rwhy">${esc(row.why)}</div>
             </div>
@@ -1888,7 +1922,7 @@ function renderCompetitorDrawer(){
   const campaigns = [...co.campaigns].sort((a,b)=>b.date.localeCompare(a.date));
 
   drawer.innerHTML = `
-    <button class="drawer-close" id="drawerCloseBtn">${ICONS.x}</button>
+    <button class="drawer-close" id="drawerCloseBtn" aria-label="Close">${ICONS.x}</button>
     <div class="drawer-head">
       <div class="eyebrow">${esc(co.hq)}</div>
       <h2>${esc(co.name)}</h2>
@@ -1923,7 +1957,7 @@ function renderCompetitorDrawer(){
                   <span class="chip ${campaignTypeChipClass(cp.type)}">${esc(cp.type)}</span>
                   <span class="mono" style="font-size:10.5px;color:var(--muted);">${fmtDate(cp.date)}</span>
                 </div>
-                <button class="x" data-del-campaign="${cp.id}" style="background:none;border:none;color:var(--teal-strong);cursor:pointer;">${ICONS.x}</button>
+                <button class="x" data-del-campaign="${cp.id}" aria-label="Remove campaign: ${esc(cp.title)}" style="background:none;border:none;color:var(--teal-strong);cursor:pointer;">${ICONS.x}</button>
               </div>
               <div class="rname" style="margin-top:6px;">${esc(cp.title)}</div>
               <div class="rwhy">${esc(cp.summary)}</div>
@@ -2104,7 +2138,7 @@ function renderResearch(){
         <div class="card sol-card">
           <div class="row" style="justify-content:space-between;margin-bottom:8px;">
             <span class="chip chip-teal">${fmtDate((r.capturedAt||'').slice(0,10))}</span>
-            <button class="x" data-del-research="${r.id}" style="background:none;border:none;color:var(--faint);cursor:pointer;">${ICONS.x}</button>
+            <button class="x" data-del-research="${r.id}" aria-label="Remove clip: ${esc(r.title)}" style="background:none;border:none;color:var(--faint);cursor:pointer;">${ICONS.x}</button>
           </div>
           <h3>${r.url?`<a href="https://${esc(stripProto(r.url))}" target="_blank" rel="noopener" style="color:var(--ink);text-decoration:none;">${esc(r.title)}</a>`:esc(r.title)}</h3>
           ${r.summary?`<p><b>Summary:</b> ${esc(r.summary)}</p>`:''}
@@ -2442,7 +2476,7 @@ function renderEventDrawer(){
   const drawer = document.getElementById('drawer');
   if (!ev){ drawer.innerHTML=''; return; }
   drawer.innerHTML = `
-    <button class="drawer-close" id="drawerCloseBtn">${ICONS.x}</button>
+    <button class="drawer-close" id="drawerCloseBtn" aria-label="Close">${ICONS.x}</button>
     <div class="drawer-head">
       <div class="eyebrow">${esc(ev.organizer)}</div>
       <h2>${esc(ev.name)}</h2>
@@ -2469,9 +2503,9 @@ function renderEventDrawer(){
       <div class="dsec">
         <div class="dsec-head"><h4>Core benefits</h4></div>
         <div class="bullets" id="evBenefits">
-          ${ev.benefits.map((b,i)=>`<div class="bullet solution"><span>${esc(b)}</span><button class="x" data-del-benefit="${i}">${ICONS.x}</button></div>`).join('')}
+          ${ev.benefits.map((b,i)=>`<div class="bullet solution"><span>${esc(b)}</span><button class="x" data-del-benefit="${i}" aria-label="Remove benefit: ${esc(b)}">${ICONS.x}</button></div>`).join('')}
         </div>
-        <div class="add-inline"><input id="newBenefit" placeholder="Add a benefit…"><button class="btn btn-sm" id="addBenefitBtn">${ICONS.plus}</button></div>
+        <div class="add-inline"><input id="newBenefit" placeholder="Add a benefit…"><button class="btn btn-sm" id="addBenefitBtn" aria-label="Add benefit">${ICONS.plus}</button></div>
       </div>
 
       <div class="dsec">
@@ -2480,7 +2514,7 @@ function renderEventDrawer(){
           ev.attendees.map((a,i)=>`
             <div class="bullet solution" style="align-items:center;">
               <span style="flex:1;">${esc(a.name)}${a.companyId&&companyById(a.companyId)?` <span class="chip chip-teal" style="margin-left:4px;">${esc(companyById(a.companyId).name)}</span>`:''} — <span style="color:var(--muted);">${esc(a.status)}</span></span>
-              <button class="x" data-del-attendee="${a.id}">${ICONS.x}</button>
+              <button class="x" data-del-attendee="${a.id}" aria-label="Remove attendee: ${esc(a.name)}">${ICONS.x}</button>
             </div>
           `).join('')}
         <div class="add-inline"><input id="newAttName" placeholder="Person or organisation…"></div>
@@ -2806,7 +2840,7 @@ function renderSettings(){
       ${DATA.settings.connectors.map(c=>`
         <div class="bullet solution" style="align-items:flex-start;">
           <span style="flex:1;"><b>${esc(c.name)}</b> — ${esc(c.type)}${c.url?` · ${esc(c.url)}`:''}<br><span style="color:var(--muted);font-size:11px;">${esc(c.notes)}</span></span>
-          <button class="x" data-del-connector="${c.id}">${ICONS.x}</button>
+          <button class="x" data-del-connector="${c.id}" aria-label="Remove connector: ${esc(c.name)}">${ICONS.x}</button>
         </div>
       `).join('')}
       ${DATA.settings.connectors.length===0?`<div class="empty" style="padding:14px;">${ICONS.empty}<div>None added yet.</div></div>`:''}
@@ -3315,7 +3349,7 @@ function renderContacts(){
         return `
         <tr class="group-row${collapsed?' collapsed':''}">
           <td colspan="6">
-            <span class="group-toggle" data-toggle-group="${key}">${ICONS.chevron}</span>
+            <span class="group-toggle" data-toggle-group="${key}" aria-label="${collapsed?'Expand':'Collapse'} ${g.company?esc(g.company.name):'General'}">${ICONS.chevron}</span>
             <span class="group-name${g.company?'':' group-name-nolink'}" ${g.company?`data-open-company="${g.company.id}"`:''}>${g.company?esc(g.company.name):'General / not linked to an account'}</span>
             <span class="cnt">${g.contacts.length}</span>
           </td>
@@ -3386,7 +3420,7 @@ function taskCard(t){
       </div>
       <span class="chip chip-${t.priority}"><span class="chip-dot"></span>${t.priority}</span>
       <div class="due ${!t.done && isOverdue(t.due)?'overdue':''}">${t.due?fmtDate(t.due):'—'}</div>
-      <button class="del" data-del-task-g="${t.id}">${ICONS.x}</button>
+      <button class="del" data-del-task-g="${t.id}" aria-label="Remove action: ${esc(t.title)}">${ICONS.x}</button>
     </div>
   `;
 }
@@ -3463,22 +3497,54 @@ function bindView(){
       el.addEventListener('click', ()=>{ if(el.dataset.openCompany) openDrawer(el.dataset.openCompany); });
     });
   }
+  makeKeyboardClickable();
 }
 
 /* ============================================================
    MODALS
    ============================================================ */
+let modalPreviouslyFocused = null;
+function modalFocusables(body){
+  return [...body.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+    .filter(el => !el.disabled && el.offsetParent !== null);
+}
 function openModal(html, onMount, opts){
   const scrim = document.getElementById('modalScrim');
   const body = document.getElementById('modalBody');
+  modalPreviouslyFocused = document.activeElement;
   body.className = 'modal' + ((opts && opts.wide) ? ' modal-wide' : '');
   body.innerHTML = `<button class="modal-close" id="modalCloseBtn" aria-label="Close">${ICONS.x}</button>` + html;
   body.querySelector('#modalCloseBtn').addEventListener('click', closeModal);
   scrim.classList.add('open');
   scrim.onclick = (e)=>{ if(e.target===scrim) closeModal(); };
   if (onMount) onMount(body);
+  makeKeyboardClickable(body);
+  // focus the modal (a field wired up by onMount, if any, already took it) so
+  // keyboard/screen-reader users land inside it instead of the page behind it
+  if (!body.contains(document.activeElement)) {
+    const focusables = modalFocusables(body);
+    (focusables[0] || body.querySelector('#modalCloseBtn')).focus();
+  }
 }
-function closeModal(){ document.getElementById('modalScrim').classList.remove('open'); }
+function closeModal(){
+  document.getElementById('modalScrim').classList.remove('open');
+  if (modalPreviouslyFocused && document.body.contains(modalPreviouslyFocused)) modalPreviouslyFocused.focus();
+  modalPreviouslyFocused = null;
+}
+// Escape-to-close + a focus trap so Tab/Shift+Tab cycles inside the modal
+// instead of leaking focus into the page behind the scrim.
+document.addEventListener('keydown', e=>{
+  const scrim = document.getElementById('modalScrim');
+  if (!scrim || !scrim.classList.contains('open')) return;
+  if (e.key === 'Escape'){ closeModal(); return; }
+  if (e.key !== 'Tab') return;
+  const body = document.getElementById('modalBody');
+  const focusables = modalFocusables(body);
+  if (!focusables.length) return;
+  const first = focusables[0], last = focusables[focusables.length-1];
+  if (e.shiftKey && document.activeElement === first){ e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last){ e.preventDefault(); first.focus(); }
+});
 
 // Replaces window.confirm() — sandboxed artifact iframes commonly block native
 // confirm/alert/prompt dialogs, which silently no-ops the whole action (this is
