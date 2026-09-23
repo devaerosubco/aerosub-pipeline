@@ -9,8 +9,8 @@ Companion doc: [PRD-v2.md](PRD-v2.md). Refs like "PRD-v2 §5" point into it. Thi
 | Step | State |
 |---|---|
 | HT-A — Foundation (roles, sector, categories) | ✅ 2026-09-17 |
-| HT-B — Store: catalog + bulk/single upload | 🟡 built 2026-09-17, db:check/rls-test/browser pass not yet run (no local Docker this session) |
-| HT-C — Store: dashboard, card/list, bulk actions, sharing | 🟡 built 2026-09-17, same test gap as HT-B |
+| HT-B — Store: catalog + bulk/single upload | ✅ 2026-09-18 — db:check (53/53) + test:rls (70/70) verified against a live local Supabase; manual real-browser pass still not done |
+| HT-C — Store: dashboard, card/list, bulk actions, sharing | ✅ 2026-09-18 — same db:check/test:rls verification as HT-B; manual real-browser pass still not done |
 | HT-D — Create: Quotes/Proforma/Commercials + templates | pending |
 | HT-E — RFQ Manager | pending |
 | HT-F — Personal vs. general Tasks & Companies | pending |
@@ -74,13 +74,13 @@ Settings (admin-only controls, RLS-enforced regardless of client hiding).
   extended to cover `sector` (present + defaults-to-`''`/`null`).
 - [x] `npx vitest run` — 48/48 pass (was 46; +2 for `categoryFromRow` and the
   company `sector` round-trip). `node --check` clean on every touched file.
-- [ ] `npm run db:reset && npm run db:check && npm run test:rls` — **not yet
-  run**: this session has no local Docker/Supabase running (`docker info`
-  fails). Needs `supabase start` first; do this before merging.
+- [x] `npm run db:reset && npm run db:check && npm run test:rls` — run
+  2026-09-18 against a real local Supabase instance (see the `seed.sql` fix
+  commit): db:check 53/53, test:rls 70/70.
 - [ ] Manual real-browser pass: sign in as the bootstrap admin, add/rename/
   remove a category, confirm a non-admin sees the categories read-only and the
-  Team role toggle only on admin sessions — **not yet run**, same reason as
-  above (needs `npm run dev` against a running local Supabase).
+  Team role toggle only on admin sessions — **still not run** (needs
+  `npm run dev` against a running local Supabase).
 
 ---
 
@@ -119,6 +119,12 @@ Supabase Storage.
   (valid/error per row) → `productsApi.bulkCreate`/`servicesApi.bulkCreate`
   (`write(table,'insert',{row:rows},{many:true})`) → `status='Pending
   Review'`.
+  - ↳ note: row validation checked for a non-numeric price but not a
+    negative one — the single-item form has `min="0"` on the price input,
+    but a negative price in a CSV would pass row validation and fail the
+    whole batch insert against the DB's `price_amount >= 0` check, surfaced
+    as a raw Postgres error rather than flagged per-row. Fixed post-review:
+    a negative `price` is now flagged in the preview like any other error.
 - [x] Single-item forms: `openAddSolutionModal`/`openAddServiceModal` (both
   require a category); product/service drawers gain a "Store details"
   section (category, price+currency, images; products also get
@@ -129,19 +135,21 @@ Supabase Storage.
   `company_services` seed counts, a `store-attachments` bucket + policy-count
   check) / `scripts/rls-test.mjs` (`services`/`company_services` added to
   `ALL_TABLES`/`FLAT`, a dedicated services CRUD block, an anon-vs-member
-  storage upload/read block) extended — **not yet run against a live DB**
-  (see below).
+  storage upload/read block) extended — run 2026-09-18 against a live DB,
+  db:check 53/53 / test:rls 70/70 (see below).
 - [x] `npx vitest run` — 60/60 (was 48; +8 csv.js, +4 Store round-trip tests
   in store.test.js). `node --check` clean on every touched/new file.
   `npx vite build` clean (425 kB JS / 26 kB CSS — up from HT0's 192 kB, no
   heavy new dependency added). `npm run check:secrets` clean.
-- [ ] `npm run db:reset && npm run db:check && npm run test:rls` — **not yet
-  run**, same reason as HT-A: no local Docker/Supabase this session.
+- [x] `npm run db:reset && npm run db:check && npm run test:rls` — run
+  2026-09-18 against a real local Supabase instance: db:check 53/53,
+  test:rls 70/70.
 - [ ] Manual real-browser pass: bulk upload (valid + invalid rows, wrong
   category name), single upload with/without OEM (datasheet field
   appears/hides correctly), image upload + signed-URL "View", archive/
   unarchive, tag a service to a company from both the service drawer and the
-  company drawer — **not yet run**, same reason.
+  company drawer — **still not run** (needs `npm run dev` against a running
+  local Supabase).
 
 ## HT-C. Store dashboard, card/list toggle, bulk actions, member sharing
 
@@ -196,19 +204,28 @@ pattern. Bulk select + floating action toolbar. Members-only share +
 - [x] `scripts/db-check.mjs` (23 tables, 86 policies, `store_item_shares` seed
   count) / `scripts/rls-test.mjs` (`store_item_shares` in `ALL_TABLES`, a
   dedicated block: share/read/revoke, a member can't insert a share claiming
-  `shared_by` = someone else) extended — **not yet run against a live DB**.
+  `shared_by` = someone else) extended — run 2026-09-18 against a live DB,
+  db:check 53/53 / test:rls 70/70.
+  - ↳ note: the RLS test confirms only the sharer (`shared_by`) can revoke,
+    but the Share section UI rendered a revoke (×) button for every row
+    regardless of viewer — a recipient clicking it would silently no-op
+    (RLS filters, doesn't error) while the UI still toasted "Share revoked".
+    Fixed post-review: the × now only renders when `shared_by === me`;
+    a recipient's own row is labelled "Shared with you by …" instead.
 - [x] `npx vitest run` — still 60/60 (no new pure-logic units this task; the
   new code is render/bind/DOM wiring, covered by real-browser passes per
   this app's existing convention, same as `main.js` always has been).
   `node --check` clean on every touched file. `npx vite build` clean (439 kB
   JS / 26 kB CSS). `npm run check:secrets` clean.
-- [ ] `npm run db:reset && npm run db:check && npm run test:rls` — **not yet
-  run**, same reason as HT-A/HT-B: no local Docker/Supabase this session.
+- [x] `npm run db:reset && npm run db:check && npm run test:rls` — run
+  2026-09-18 against a real local Supabase instance: db:check 53/53,
+  test:rls 70/70.
 - [ ] Manual real-browser pass: dashboard tiles populate after a search-then-
   open and after "Add to quote"; card/list toggle; bulk archive/unarchive/
   export/delete; share an item with a teammate and confirm it shows in
   their "Shared with me" filter; open a `?store=` link fresh (signed out ->
-  sign in -> lands on the item) — **not yet run**, same reason.
+  sign in -> lands on the item) — **still not run** (needs `npm run dev`
+  against a running local Supabase).
 
 ## HT-D. Create: Quotes/Proforma/Commercials + uploaded templates
 

@@ -1792,8 +1792,10 @@ function renderShareSection(kind, id){
       ${!ready ? `<div class="sub">Loading…</div>` : `
         ${shares.length===0 ? `<div class="empty" style="padding:12px;">${ICONS.empty}<div>Not shared with anyone yet.</div></div>` :
           shares.map(sh=>{
-            const who = teammates.find(t=>t.id===sh.shared_with);
-            return `<div class="bullet solution"><span style="flex:1;">${esc(who?(who.full_name||who.email):'Unknown')}</span><button class="x" data-revoke-share="${sh.id}">${ICONS.x}</button></div>`;
+            const mine = sh.shared_by===AUTH.profile.id;
+            const who = teammates.find(t=>t.id=== (mine ? sh.shared_with : sh.shared_by));
+            const label = mine ? esc(who?(who.full_name||who.email):'Unknown') : `Shared with you by ${esc(who?(who.full_name||who.email):'someone')}`;
+            return `<div class="bullet solution"><span style="flex:1;">${label}</span>${mine?`<button class="x" data-revoke-share="${sh.id}">${ICONS.x}</button>`:''}</div>`;
           }).join('')}
         ${shareable.length===0 ? '' : `
         <div class="add-inline">
@@ -4860,7 +4862,7 @@ function openBulkUploadModal(kind){
         if (!name) errors.push('missing name');
         if (!category) errors.push(`unknown category "${categoryNameRaw}"`);
         const priceAmount = r.price ? Number(r.price) : null;
-        if (r.price && Number.isNaN(priceAmount)) errors.push('invalid price');
+        if (r.price && (Number.isNaN(priceAmount) || priceAmount < 0)) errors.push('invalid price');
         return {
           name, categoryId: category ? category.id : '',
           blurb: (r.blurb||'').trim(),
