@@ -17,6 +17,7 @@
     "test:xss": "node scripts/xss-test.mjs",
     "test:headers": "node scripts/headers-test.mjs",
     "test:crossbrowser": "node scripts/crossbrowser-smoke.mjs",
+    "test:views": "node scripts/view-regression.mjs",
     "test:ext": "node chrome-extension/build.mjs && node scripts/ext-save-test.mjs && node scripts/ext-popup-test.mjs",
     "ext:build": "node chrome-extension/build.mjs",
     "ext:build:prod": "node chrome-extension/build.mjs chrome-extension/.env.production",

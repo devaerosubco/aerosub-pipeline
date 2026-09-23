@@ -677,6 +677,12 @@ function toast(msg){
   clearTimeout(toast._t);
   toast._t = setTimeout(()=>el.classList.remove('show'), 2200);
 }
+// Every write-path catch() reports failure the same way: "Could not <verb> —
+// <reason, or 'try again' if the error has none>". Centralised so the 50+
+// call sites can't drift from each other.
+function toastError(verb, e){
+  toast('Could not ' + verb + ' — ' + (e && e.message || 'try again'));
+}
 function fmtDate(iso){
   if(!iso) return '';
   const d = new Date(iso+'T00:00:00');
@@ -698,6 +704,16 @@ function esc(s){
 function debounce(fn, ms){
   let t;
   return (...args)=>{ clearTimeout(t); t = setTimeout(()=>fn(...args), ms); };
+}
+// A list-view empty-state that tells "nothing's been added yet" apart from
+// "your search/filters hid everything" — the latter gets a one-click way out
+// instead of leaving the user to guess that a stale filter is the cause.
+function emptyState(subject, shown, total, { style = '' } = {}){
+  const styleAttr = style ? ` style="${style}"` : '';
+  if (total === 0){
+    return `<div class="empty"${styleAttr}>${ICONS.empty}<div>No ${subject} yet.</div></div>`;
+  }
+  return `<div class="empty"${styleAttr}>${ICONS.empty}<div>No ${subject} match your search/filters.<br><button class="linklike" data-clear-filters style="margin-top:6px;">Clear filters</button></div></div>`;
 }
 // Custom clickable widgets (kanban cards, table rows, inline chips/links) are
 // plain divs/trs/spans with a click listener elsewhere — this gives each one
@@ -851,7 +867,7 @@ function renderApp(){
       <div class="topbar">
         <div>
           <div class="crumb">${viewCrumb()}</div>
-          <h1>${viewTitle()}</h1>
+          <h1>${viewTitle()} <span class="view-loading" id="viewLoading" hidden>Refreshing…</span></h1>
         </div>
         <button class="btn btn-ghost" id="refreshAllBtn" title="Re-pull everything from the server (PRD §9 — no realtime, refetch on demand)">${ICONS.refresh||'↻'} Refresh</button>
         ${['companies','contacts','solutions','competitors','research','events'].includes(ui.view) ? `
@@ -931,14 +947,25 @@ function bindShell(){
 // null for those) — their data stays whatever's already in memory.
 async function refreshCurrentView(view){
   if (!DATA) return;
+  const indicator = document.getElementById('viewLoading');
+  if (indicator) indicator.hidden = false;
   try{
     const patch = await store.refetchView(view);
     if (!patch || !DATA) return;
     for (const k of ['companies', 'news', 'competitors', 'tasks', 'solutions', 'events']){
       if (patch[k]) DATA[k] = patch[k];
     }
-    if (ui.view === view) renderApp();   // only re-render if still on that view
+    if (ui.view === view) renderApp();   // only re-render if still on that view; also clears the indicator
   }catch(e){ /* silent — the header Refresh button is the explicit retry path */ }
+  finally{
+    // If we didn't re-render (navigated away again, or refetchView was a no-op),
+    // the indicator on THIS render is about to be discarded anyway — but clear
+    // it defensively in case the element is still the one on screen.
+    if (ui.view === view){
+      const stillThere = document.getElementById('viewLoading');
+      if (stillThere) stillThere.hidden = true;
+    }
+  }
 }
 
 // The header "Refresh" control — re-pulls every table (PRD §9).
@@ -952,7 +979,7 @@ async function doRefreshAll(){
     renderApp();
     toast('Refreshed');
   }catch(e){
-    toast('Could not refresh — ' + (e.message || 'try again'));
+    toastError('refresh', e);
     if (btn) btn.disabled = false;
   }
 }
@@ -1196,7 +1223,7 @@ function openManageNewsModal(){
         const saved = await newsApi.create(news);
         DATA.news.push(saved);
         closeModal(); renderView(); toast('Added to feed');
-      }catch(e){ toast('Could not add — ' + (e.message || 'try again')); addBtn.disabled = false; }
+      }catch(e){ toastError('add', e); addBtn.disabled = false; }
     });
     body.querySelectorAll('[data-del-news]').forEach(b=>b.addEventListener('click', async ()=>{
       const id = b.dataset.delNews;
@@ -1205,7 +1232,7 @@ function openManageNewsModal(){
         await newsApi.dismiss(id, AUTH.profile && AUTH.profile.id);
         DATA.news = DATA.news.filter(x=>x.id!==id);
         closeModal(); renderView(); openManageNewsModal();
-      }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); b.disabled = false; }
+      }catch(e){ toastError('remove', e); b.disabled = false; }
     }));
   }, {wide:true});
 }
@@ -1292,7 +1319,7 @@ function renderKCard(c, nextTask){
 }
 
 function renderCompanyTable(list){
-  if (!list.length) return `<div class="empty">${ICONS.empty}<div>No accounts match.</div></div>`;
+  if (!list.length) return emptyState('accounts', list.length, DATA.companies.length);
   return `
   <div class="card tablewrap">
     <table>
@@ -1357,7 +1384,7 @@ async function setCompanyStage(c, stage, { inDrawer } = {}){
     logActivity('Moved pipeline stage', `${c.name} → ${stageOf(stage).label}`);
     toast(`${c.name} moved to ${stageOf(stage).label}`);
   }catch(e){
-    toast('Could not move — ' + (e.message || 'try again'));
+    toastError('move', e);
   }
   renderApp();
   if (inDrawer) openDrawer(c.id);
@@ -1368,7 +1395,7 @@ async function setCompanyPriority(c, priority){
     await companiesApi.setPriority(c.id, priority);
     c.priority = priority;
   }catch(e){
-    toast('Could not save priority — ' + (e.message || 'try again'));
+    toastError('save priority', e);
   }
   renderApp(); openDrawer(c.id);
 }
@@ -1551,7 +1578,7 @@ function bindDrawer(c){
       await companiesApi.updateIdentity(c.id, {name, type, summary});
       c.name = name; c.type = type; c.summary = summary;
       toast('Details saved'); renderApp(); openDrawer(c.id);
-    }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+    }catch(e){ toastError('save', e); }
   });
 
   document.getElementById('addPainBtn').addEventListener('click', async ()=>{
@@ -1559,12 +1586,12 @@ function bindDrawer(c){
     if (!inp.value.trim()) return;
     const next = [...c.painPoints, inp.value.trim()];
     try{ await companiesApi.setPainPoints(c.id, next); c.painPoints = next; openDrawer(c.id); }
-    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+    catch(e){ toastError('save', e); }
   });
   document.querySelectorAll('[data-del-pain]').forEach(b=>b.addEventListener('click', async ()=>{
     const next = c.painPoints.filter((_,i)=>i!==+b.dataset.delPain);
     try{ await companiesApi.setPainPoints(c.id, next); c.painPoints = next; openDrawer(c.id); }
-    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+    catch(e){ toastError('save', e); }
   }));
 
   document.getElementById('addCurBtn').addEventListener('click', async ()=>{
@@ -1572,12 +1599,12 @@ function bindDrawer(c){
     if (!inp.value.trim()) return;
     const next = [...c.currentSolutions, inp.value.trim()];
     try{ await companiesApi.setCurrentSolutions(c.id, next); c.currentSolutions = next; openDrawer(c.id); }
-    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+    catch(e){ toastError('save', e); }
   });
   document.querySelectorAll('[data-del-cur]').forEach(b=>b.addEventListener('click', async ()=>{
     const next = c.currentSolutions.filter((_,i)=>i!==+b.dataset.delCur);
     try{ await companiesApi.setCurrentSolutions(c.id, next); c.currentSolutions = next; openDrawer(c.id); }
-    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+    catch(e){ toastError('save', e); }
   }));
 
   document.getElementById('addRecBtn').addEventListener('click', async ()=>{
@@ -1590,7 +1617,7 @@ function bindDrawer(c){
       c.recommended.push({sol:sel.value, why:why.value.trim()});
       logActivity('Tagged a product to an account', `${solutionById(sel.value)?.name||sel.value} → ${c.name}`);
       openDrawer(c.id); renderView();
-    }catch(e){ toast('Could not tag — ' + (e.message || 'try again')); }
+    }catch(e){ toastError('tag', e); }
   });
   document.querySelectorAll('[data-del-rec]').forEach(b=>b.addEventListener('click', async ()=>{
     const r = c.recommended[+b.dataset.delRec];
@@ -1599,7 +1626,7 @@ function bindDrawer(c){
       await companiesApi.untagProduct(c.id, r.sol);
       c.recommended.splice(+b.dataset.delRec,1);
       openDrawer(c.id); renderView();
-    }catch(e){ toast('Could not untag — ' + (e.message || 'try again')); }
+    }catch(e){ toastError('untag', e); }
   }));
   document.querySelectorAll('[data-open-product]').forEach(el=>el.addEventListener('click', ()=>openProductDrawer(el.dataset.openProduct)));
 
@@ -1614,14 +1641,14 @@ function bindDrawer(c){
       const saved = await contactsApi.markContacted(ct.id, today);
       Object.assign(ct, saved);
       toast('Marked as contacted today'); openDrawer(c.id);
-    }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+    }catch(e){ toastError('save', e); }
   }));
 
   document.querySelectorAll('[data-toggle-task]').forEach(b=>b.addEventListener('change', async ()=>{
     const t = DATA.tasks.find(x=>x.id===b.dataset.toggleTask);
     if (!t) return;
     try{ await tasksApi.toggleDone(t.id, b.checked); t.done = b.checked; }
-    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+    catch(e){ toastError('save', e); }
     renderApp(); openDrawer(c.id);
   }));
   document.querySelectorAll('[data-del-task]').forEach(b=>b.addEventListener('click', async ()=>{
@@ -1630,14 +1657,14 @@ function bindDrawer(c){
       await tasksApi.remove(id);
       DATA.tasks = DATA.tasks.filter(t=>t.id!==id);
       renderApp(); openDrawer(c.id);
-    }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+    }catch(e){ toastError('remove', e); }
   }));
   document.getElementById('addTaskInline').addEventListener('click', ()=>openAddTaskModal(c.id));
 
   document.getElementById('saveNotesBtn').addEventListener('click', async ()=>{
     const notes = document.getElementById('notesArea').value;
     try{ await companiesApi.setNotes(c.id, notes); c.notes = notes; toast('Notes saved'); }
-    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+    catch(e){ toastError('save', e); }
   });
   makeKeyboardClickable(document.getElementById('drawer'));
 }
@@ -1738,13 +1765,13 @@ function bindProductDrawer(p){
   document.getElementById('statusSelect').addEventListener('change', async e=>{
     const status = e.target.value;
     try{ await productsApi.setStatus(p.id, status); p.status = status; }
-    catch(err){ toast('Could not save — ' + (err.message || 'try again')); }
+    catch(err){ toastError('save', err); }
     renderProductDrawer(); renderView();
   });
   document.getElementById('kindSelect').addEventListener('change', async e=>{
     const kind = e.target.value;
     try{ await productsApi.setKind(p.id, kind); p.kind = kind; }
-    catch(err){ toast('Could not save — ' + (err.message || 'try again')); }
+    catch(err){ toastError('save', err); }
     renderProductDrawer(); renderView();
   });
   document.getElementById('saveIdentityBtn').addEventListener('click', async ()=>{
@@ -1755,7 +1782,7 @@ function bindProductDrawer(p){
       await productsApi.editIdentity(p.id, {name, tag});
       p.name = name; p.tag = tag;
       toast('Details saved'); renderApp(); openProductDrawer(p.id);
-    }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+    }catch(e){ toastError('save', e); }
   });
   document.getElementById('deleteProductBtn').addEventListener('click', ()=>{
     openConfirmModal(`Remove ${p.name}? It will also be untagged from every account.`, async ()=>{
@@ -1765,14 +1792,14 @@ function bindProductDrawer(p){
         DATA.solutions = DATA.solutions.filter(x=>x.id!==p.id);
         closeDrawer(); renderApp();
         toast('Product removed');
-      }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+      }catch(e){ toastError('remove', e); }
     });
   });
 
   document.getElementById('saveBlurbBtn').addEventListener('click', async ()=>{
     const blurb = document.getElementById('blurbArea').value;
     try{ await productsApi.setBlurb(p.id, blurb); p.blurb = blurb; toast('Description saved'); renderView(); }
-    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+    catch(e){ toastError('save', e); }
   });
 
   if (!p.highlights) p.highlights = [];
@@ -1781,12 +1808,12 @@ function bindProductDrawer(p){
     if (!inp.value.trim()) return;
     const next = [...p.highlights, inp.value.trim()];
     try{ await productsApi.setHighlights(p.id, next); p.highlights = next; renderProductDrawer(); }
-    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+    catch(e){ toastError('save', e); }
   });
   document.querySelectorAll('[data-del-hl]').forEach(b=>b.addEventListener('click', async ()=>{
     const next = p.highlights.filter((_,i)=>i!==+b.dataset.delHl);
     try{ await productsApi.setHighlights(p.id, next); p.highlights = next; renderProductDrawer(); }
-    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+    catch(e){ toastError('save', e); }
   }));
 
   document.querySelectorAll('[data-open-company]').forEach(el=>el.addEventListener('click', ()=>openDrawer(el.dataset.openCompany)));
@@ -1797,7 +1824,7 @@ function bindProductDrawer(p){
       await companiesApi.untagProduct(co.id, p.id);
       co.recommended = co.recommended.filter(r=>r.sol!==p.id);
       renderProductDrawer(); renderView();
-    }catch(e){ toast('Could not untag — ' + (e.message || 'try again')); }
+    }catch(e){ toastError('untag', e); }
   }));
   const addTagBtn = document.getElementById('addTagBtn');
   if (addTagBtn) addTagBtn.addEventListener('click', async ()=>{
@@ -1811,7 +1838,7 @@ function bindProductDrawer(p){
         co.recommended.push({sol:p.id, why:why.value.trim()});
         logActivity('Tagged a product to an account', `${p.name} → ${co.name}`);
         renderProductDrawer(); renderView(); toast('Tagged to '+co.name);
-      }catch(e){ toast('Could not tag — ' + (e.message || 'try again')); }
+      }catch(e){ toastError('tag', e); }
     }
     else if (co && !why.value.trim()){ toast('Add a short reason first'); }
   });
@@ -1903,7 +1930,7 @@ function renderCompetitors(){
           <div class="adopters">${co.campaigns.length} campaign${co.campaigns.length===1?'':'s'} logged</div>
         </div>`;
       }).join('')}
-      ${list.length===0?`<div class="empty">${ICONS.empty}<div>No competitors match.</div></div>`:''}
+      ${list.length===0?emptyState('competitors', list.length, DATA.competitors.length):''}
     </div>
   `;
 }
@@ -2006,13 +2033,13 @@ function bindCompetitorDrawer(co){
   document.getElementById('modalitySelect').addEventListener('change', async e=>{
     const modality = e.target.value;
     try{ await competitorsApi.setModality(co.id, modality); co.modality = modality; }
-    catch(err){ toast('Could not save — ' + (err.message || 'try again')); }
+    catch(err){ toastError('save', err); }
     renderCompetitorDrawer(); renderView();
   });
   document.getElementById('threatSelect').addEventListener('change', async e=>{
     const threat = e.target.value;
     try{ await competitorsApi.setThreat(co.id, threat); co.threat = threat; }
-    catch(err){ toast('Could not save — ' + (err.message || 'try again')); }
+    catch(err){ toastError('save', err); }
     renderCompetitorDrawer(); renderView();
   });
   document.getElementById('deleteCompetitorBtn').addEventListener('click', ()=>{
@@ -2022,7 +2049,7 @@ function bindCompetitorDrawer(co){
         DATA.competitors = DATA.competitors.filter(x=>x.id!==co.id);
         closeDrawer(); renderApp();
         toast('Competitor removed');
-      }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+      }catch(e){ toastError('remove', e); }
     });
   });
 
@@ -2035,13 +2062,13 @@ function bindCompetitorDrawer(co){
       await competitorsApi.editIdentity(co.id, {name, hq, website});
       co.name = name; co.hq = hq; co.website = website;
       toast('Details saved'); renderApp(); openCompetitorDrawer(co.id);
-    }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+    }catch(e){ toastError('save', e); }
   });
 
   document.getElementById('saveNotesBtn').addEventListener('click', async ()=>{
     const notes = document.getElementById('notesArea').value;
     try{ await competitorsApi.setNotes(co.id, notes); co.notes = notes; toast('Notes saved'); }
-    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+    catch(e){ toastError('save', e); }
   });
 
   document.querySelectorAll('[data-del-campaign]').forEach(b=>b.addEventListener('click', async ()=>{
@@ -2049,7 +2076,7 @@ function bindCompetitorDrawer(co){
       await competitorsApi.removeCampaign(b.dataset.delCampaign);
       co.campaigns = co.campaigns.filter(x=>x.id!==b.dataset.delCampaign);
       renderCompetitorDrawer(); renderView();
-    }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+    }catch(e){ toastError('remove', e); }
   }));
 
   document.getElementById('addCampaignBtn').addEventListener('click', async ()=>{
@@ -2073,40 +2100,37 @@ function bindCompetitorDrawer(co){
       co.campaigns.push(saved);
       logActivity('Logged a competitor campaign', `${co.name} — ${title}`);
       renderCompetitorDrawer(); renderView(); toast('Campaign logged');
-    }catch(e){ toast('Could not log campaign — ' + (e.message || 'try again')); addBtn.disabled = false; }
+    }catch(e){ toastError('log campaign', e); addBtn.disabled = false; }
   });
 }
 
 function openAddCompetitorModal(){
-  openModal(`
-    <h3>New competitor</h3>
-    <div class="field"><label>Name</label><input id="mName"></div>
-    <div class="field"><label>HQ / region</label><input id="mHq" placeholder="e.g. Lagos, Nigeria"></div>
-    <div class="field"><label>Modality</label><select id="mModality">${['Drone','ROV','Crawler','Multi-domain','Other'].map(m=>`<option value="${m}">${m}</option>`).join('')}</select></div>
-    <div class="field"><label>Threat level</label><select id="mThreat">${['Direct','Adjacent','Watch'].map(t=>`<option value="${t}">${t}</option>`).join('')}</select></div>
-    <div class="field"><label>Website</label><input id="mWebsite" placeholder="e.g. example.com"></div>
-    <div class="field"><label>Notes</label><textarea id="mNotes" placeholder="Positioning, pricing tier, what to watch for…"></textarea></div>
-    <div class="modal-actions">
-      <button class="btn" id="mCancel">Cancel</button>
-      <button class="btn btn-primary" id="mSave">Add competitor</button>
-    </div>
-  `, body=>{
-    body.querySelector('#mCancel').onclick = closeModal;
-    body.querySelector('#mSave').onclick = async ()=>{
+  openCreateModal({
+    title: 'New competitor',
+    fieldsHtml: `
+      <div class="field"><label>Name</label><input id="mName"></div>
+      <div class="field"><label>HQ / region</label><input id="mHq" placeholder="e.g. Lagos, Nigeria"></div>
+      <div class="field"><label>Modality</label><select id="mModality">${['Drone','ROV','Crawler','Multi-domain','Other'].map(m=>`<option value="${m}">${m}</option>`).join('')}</select></div>
+      <div class="field"><label>Threat level</label><select id="mThreat">${['Direct','Adjacent','Watch'].map(t=>`<option value="${t}">${t}</option>`).join('')}</select></div>
+      <div class="field"><label>Website</label><input id="mWebsite" placeholder="e.g. example.com"></div>
+      <div class="field"><label>Notes</label><textarea id="mNotes" placeholder="Positioning, pricing tier, what to watch for…"></textarea></div>
+    `,
+    saveLabel: 'Add competitor',
+    errorVerb: 'add competitor',
+    build(body){
       const name = body.querySelector('#mName').value.trim();
       if (!name){ toast('Name required'); return; }
-      const competitor = {
+      return {
         id: crypto.randomUUID(), name, hq: body.querySelector('#mHq').value.trim()||'Unknown',
         modality: body.querySelector('#mModality').value, threat: body.querySelector('#mThreat').value,
         website: normalizeUrlish(body.querySelector('#mWebsite').value), notes: body.querySelector('#mNotes').value.trim(),
       };
-      const save = body.querySelector('#mSave'); save.disabled = true;
-      try{
-        const saved = await competitorsApi.create(competitor);
-        DATA.competitors.push(saved);
-        closeModal(); renderApp(); toast('Competitor added');
-      }catch(e){ toast('Could not add competitor — ' + (e.message || 'try again')); save.disabled = false; }
-    };
+    },
+    async save(competitor){
+      const saved = await competitorsApi.create(competitor);
+      DATA.competitors.push(saved);
+    },
+    successToast: 'Competitor added',
   });
 }
 
@@ -2161,7 +2185,7 @@ function renderResearch(){
           ${r.contactName && co ? `<button class="btn btn-sm" data-promote-contact="${r.id}" style="width:100%;justify-content:center;">${ICONS.plus} Add ${esc(r.contactName)} to ${esc(co.name)}</button>` : ''}
         </div>`;
       }).join('')}
-      ${rows.length===0?`<div class="empty">${ICONS.empty}<div>No clips saved yet.</div></div>`:''}
+      ${rows.length===0?emptyState('clips', rows.length, DATA.research.length):''}
     </div>
     ${(!researchEnd && DATA.research.length >= store.RESEARCH_PAGE) ? `
       <div style="text-align:center;margin-top:14px;">
@@ -2176,14 +2200,14 @@ function bindResearchControls(){
       await researchApi.remove(id);
       DATA.research = DATA.research.filter(x=>x.id!==id);
       renderView(); toast('Clip removed');
-    }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+    }catch(e){ toastError('remove', e); }
   }));
   document.querySelectorAll('[data-link-company]').forEach(sel=>sel.addEventListener('change', async e=>{
     const r = DATA.research.find(x=>x.id===sel.dataset.linkCompany);
     if (!r) return;
     const companyId = e.target.value;
     try{ await researchApi.linkCompany(r.id, companyId); r.companyId = companyId; renderView(); }
-    catch(err){ toast('Could not link — ' + (err.message || 'try again')); renderView(); }
+    catch(err){ toastError('link', err); renderView(); }
   }));
   const loadMoreBtn = document.getElementById('loadMoreResearchBtn');
   if (loadMoreBtn) loadMoreBtn.addEventListener('click', async ()=>{
@@ -2195,7 +2219,7 @@ function bindResearchControls(){
       DATA.research.push(...clips.filter(c => !have.has(c.id)));
       researchEnd = end;
       renderView();
-    }catch(e){ toast('Could not load more — ' + (e.message || 'try again')); loadMoreBtn.disabled = false; }
+    }catch(e){ toastError('load more', e); loadMoreBtn.disabled = false; }
   });
   document.querySelectorAll('[data-promote-contact]').forEach(b=>b.addEventListener('click', async ()=>{
     const r = DATA.research.find(x=>x.id===b.dataset.promoteContact);
@@ -2210,7 +2234,7 @@ function bindResearchControls(){
       const saved = await contactsApi.create(co.id, ct);
       co.contacts.push(saved);
       renderApp(); toast(`Added ${r.contactName} to ${co.name}`);
-    }catch(e){ toast('Could not add contact — ' + (e.message || 'try again')); }
+    }catch(e){ toastError('add contact', e); }
   }));
 }
 function openAddResearchModal(){
@@ -2251,7 +2275,7 @@ function openAddResearchModal(){
         const saved = await researchApi.create(clip, AUTH.profile && AUTH.profile.id);
         DATA.research.unshift(saved);
         closeModal(); renderApp(); toast('Clip saved');
-      }catch(e){ toast('Could not save — ' + (e.message || 'try again')); save.disabled = false; }
+      }catch(e){ toastError('save', e); save.disabled = false; }
     };
   }, {wide:true});
 }
@@ -2277,7 +2301,7 @@ function doImportResearch(e){
       DATA.research.sort((a,b)=>(b.capturedAt||'').localeCompare(a.capturedAt||''));
       renderApp();
       toast(saved.length ? `Imported ${saved.length} clip${saved.length===1?'':'s'}` : 'No valid clips found in that file');
-    }catch(err){ toast('Could not import — ' + (err.message || 'try again')); }
+    }catch(err){ toastError('import', err); }
     input.value = '';
   };
   reader.readAsText(file);
@@ -2448,7 +2472,7 @@ function renderEvents(){
     </div>
     <div class="sol-grid">
       ${list.map(eventCard).join('')}
-      ${list.length===0?`<div class="empty">${ICONS.empty}<div>No events match.</div></div>`:''}
+      ${list.length===0?emptyState('events', list.length, DATA.events.length):''}
     </div>
   `;
 }
@@ -2556,7 +2580,7 @@ function bindEventDrawer(ev){
         DATA.events = DATA.events.filter(x=>x.id!==ev.id);
         closeDrawer(); renderApp();
         toast('Event removed');
-      }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+      }catch(e){ toastError('remove', e); }
     });
   });
   document.getElementById('saveEventDetailsBtn').addEventListener('click', async ()=>{
@@ -2575,7 +2599,7 @@ function bindEventDrawer(ev){
       await eventsApi.editDetails(ev.id, patch);
       Object.assign(ev, patch);
       renderView(); renderEventDrawer(); toast('Event details saved');
-    }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+    }catch(e){ toastError('save', e); }
   });
   document.getElementById('addBenefitBtn').addEventListener('click', async ()=>{
     const inp = document.getElementById('newBenefit');
@@ -2583,12 +2607,12 @@ function bindEventDrawer(ev){
     if (!v) return;
     const next = [...ev.benefits, v];
     try{ await eventsApi.setBenefits(ev.id, next); ev.benefits = next; renderEventDrawer(); }
-    catch(e){ toast('Could not add — ' + (e.message || 'try again')); }
+    catch(e){ toastError('add', e); }
   });
   document.querySelectorAll('[data-del-benefit]').forEach(b=>b.addEventListener('click', async ()=>{
     const next = ev.benefits.filter((_,i)=>i!==+b.dataset.delBenefit);
     try{ await eventsApi.setBenefits(ev.id, next); ev.benefits = next; renderEventDrawer(); }
-    catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+    catch(e){ toastError('remove', e); }
   }));
   document.getElementById('addAttendeeBtn').addEventListener('click', async ()=>{
     const name = document.getElementById('newAttName').value.trim();
@@ -2598,19 +2622,19 @@ function bindEventDrawer(ev){
       const saved = await eventsApi.addAttendee(ev.id, attendee);
       ev.attendees.push(saved);
       renderEventDrawer();
-    }catch(e){ toast('Could not add — ' + (e.message || 'try again')); }
+    }catch(e){ toastError('add', e); }
   });
   document.querySelectorAll('[data-del-attendee]').forEach(b=>b.addEventListener('click', async ()=>{
     try{
       await eventsApi.removeAttendee(b.dataset.delAttendee);
       ev.attendees = ev.attendees.filter(a=>a.id!==b.dataset.delAttendee);
       renderEventDrawer();
-    }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+    }catch(e){ toastError('remove', e); }
   }));
   document.getElementById('saveEventNotesBtn').addEventListener('click', async ()=>{
     const notes = document.getElementById('evNotes').value;
     try{ await eventsApi.setNotes(ev.id, notes); ev.notes = notes; toast('Notes saved'); }
-    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+    catch(e){ toastError('save', e); }
   });
   document.getElementById('exportEventHtmlBtn').addEventListener('click', ()=>doExportEventHtml(ev.id));
   document.getElementById('exportEventMdBtn').addEventListener('click', ()=>doExportEventMd(ev.id));
@@ -2625,25 +2649,23 @@ function openEventDrawer(id){
   renderEventDrawer();
 }
 function openAddEventModal(){
-  openModal(`
-    <h3>New event</h3>
-    <div class="field"><label>Name</label><input id="mName"></div>
-    <div class="field"><label>Organizer</label><input id="mOrganizer"></div>
-    <div class="field"><label>Location</label><input id="mLocation"></div>
-    <div class="field"><label>Start date</label><input type="date" id="mStart"></div>
-    <div class="field"><label>End date</label><input type="date" id="mEnd"></div>
-    <div class="field"><label>Cost ($$)</label><input id="mCost" placeholder="e.g. ~$1,500 delegate pass (approx.)"></div>
-    <div class="modal-actions">
-      <button class="btn" id="mCancel">Cancel</button>
-      <button class="btn btn-primary" id="mSave">Add event</button>
-    </div>
-  `, body=>{
-    body.querySelector('#mCancel').onclick = closeModal;
-    body.querySelector('#mSave').onclick = async ()=>{
+  openCreateModal({
+    title: 'New event',
+    fieldsHtml: `
+      <div class="field"><label>Name</label><input id="mName"></div>
+      <div class="field"><label>Organizer</label><input id="mOrganizer"></div>
+      <div class="field"><label>Location</label><input id="mLocation"></div>
+      <div class="field"><label>Start date</label><input type="date" id="mStart"></div>
+      <div class="field"><label>End date</label><input type="date" id="mEnd"></div>
+      <div class="field"><label>Cost ($$)</label><input id="mCost" placeholder="e.g. ~$1,500 delegate pass (approx.)"></div>
+    `,
+    saveLabel: 'Add event',
+    errorVerb: 'add',
+    build(body){
       const name = body.querySelector('#mName').value.trim();
       if (!name){ toast('Name required'); return; }
       const start = body.querySelector('#mStart').value || new Date().toISOString().slice(0,10);
-      const event = {
+      return {
         id: crypto.randomUUID(), name,
         organizer: body.querySelector('#mOrganizer').value.trim(),
         location: body.querySelector('#mLocation').value.trim(),
@@ -2652,13 +2674,13 @@ function openAddEventModal(){
         cost: body.querySelector('#mCost').value.trim(), currency:'USD', website:'',
         benefits:[], attendees:[], notes:''
       };
-      const saveBtn = body.querySelector('#mSave'); saveBtn.disabled = true;
-      try{
-        const saved = await eventsApi.create(event);
-        DATA.events.push(saved);
-        closeModal(); renderApp(); logActivity('Added an event', name); toast('Event added');
-      }catch(e){ toast('Could not add — ' + (e.message || 'try again')); saveBtn.disabled = false; }
-    };
+    },
+    async save(event){
+      const saved = await eventsApi.create(event);
+      DATA.events.push(saved);
+      logActivity('Added an event', event.name);
+    },
+    successToast: 'Event added',
   });
 }
 
@@ -2895,7 +2917,7 @@ function bindSettingsControls(){
       const i = SETTINGS.profiles.findIndex(x=>x.id===updated.id);
       if (i>=0) SETTINGS.profiles[i] = {...SETTINGS.profiles[i], ...updated};
       renderApp(); toast('Profile saved');
-    }catch(e){ toast('Could not save — '+(e.message||'try again')); btn.disabled = false; }
+    }catch(e){ toastError('save', e); btn.disabled = false; }
   });
 
   document.getElementById('reloadTeamBtn').addEventListener('click', reloadSettingsData);
@@ -2920,14 +2942,14 @@ function bindSettingsControls(){
       await connectorsApi.remove(id);
       DATA.settings.connectors = DATA.settings.connectors.filter(c=>c.id!==id);
       renderView();
-    }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+    }catch(e){ toastError('remove', e); }
   }));
   document.getElementById('clearLogBtn').addEventListener('click', ()=>{
     openConfirmModal('Clear the activity log for everyone? This deletes every entry and can’t be undone.', async ()=>{
       try{
         await activityApi.clearAll();
         DATA.activityLog = []; activityEnd = true; renderView(); toast('Log cleared');
-      }catch(e){ toast('Could not clear — ' + (e.message || 'try again')); }
+      }catch(e){ toastError('clear', e); }
     }, 'Clear log');
   });
   const loadMoreActivityBtn = document.getElementById('loadMoreActivityBtn');
@@ -2940,7 +2962,7 @@ function bindSettingsControls(){
       DATA.activityLog.push(...rows.filter(r => !have.has(r.id)));
       activityEnd = end;
       renderView();
-    }catch(e){ toast('Could not load more — ' + (e.message || 'try again')); loadMoreActivityBtn.disabled = false; }
+    }catch(e){ toastError('load more', e); loadMoreActivityBtn.disabled = false; }
   });
 }
 
@@ -3028,7 +3050,7 @@ function openAddConnectorModal(){
         const saved = await connectorsApi.create(connector);
         DATA.settings.connectors.push(saved);
         closeModal(); renderView(); toast('Connector added');
-      }catch(e){ toast('Could not add — ' + (e.message || 'try again')); save.disabled = false; }
+      }catch(e){ toastError('add', e); save.disabled = false; }
     };
   });
 }
@@ -3365,7 +3387,7 @@ function renderContacts(){
       }).join('')}
       </tbody>
     </table>
-    ${rows.length===0?`<div class="empty">${ICONS.empty}<div>No contacts match.</div></div>`:''}
+    ${rows.length===0?emptyState('contacts', rows.length, allContacts().length):''}
   </div>`;
 }
 function bindContactsControls(){
@@ -3429,13 +3451,13 @@ function bindTasksControls(){
     const t = DATA.tasks.find(x=>x.id===b.dataset.toggleTaskG);
     if (!t) return;
     try{ await tasksApi.toggleDone(t.id, b.checked); t.done = b.checked; }
-    catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+    catch(e){ toastError('save', e); }
     renderApp();
   }));
   document.querySelectorAll('[data-del-task-g]').forEach(b=>b.addEventListener('click', async ()=>{
     const id = b.dataset.delTaskG;
     try{ await tasksApi.remove(id); DATA.tasks = DATA.tasks.filter(t=>t.id!==id); renderApp(); }
-    catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+    catch(e){ toastError('remove', e); }
   }));
   document.querySelectorAll('[data-open-company]').forEach(el=>{
     el.addEventListener('click', (e)=>{ e.stopPropagation(); openDrawer(el.dataset.openCompany); });
@@ -3454,7 +3476,7 @@ function filteredSolutions(){
 }
 function renderSolutions(){
   const list = filteredSolutions();
-  if (!list.length) return `<div class="empty">${ICONS.empty}<div>No products match.</div></div>`;
+  if (!list.length) return emptyState('products', list.length, DATA.solutions.length);
   return `<div class="sol-grid">
     ${list.map(s=>{
       const tagged = taggedCompaniesFor(s.id);
@@ -3497,6 +3519,14 @@ function bindView(){
       el.addEventListener('click', ()=>{ if(el.dataset.openCompany) openDrawer(el.dataset.openCompany); });
     });
   }
+  document.querySelectorAll('[data-clear-filters]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      ui.search = '';
+      if (ui.view==='companies') ui.companyFilter = {priority:'', stage:''};
+      if (ui.view==='competitors') ui.competitorFilter = {modality:'', threat:''};
+      renderApp();   // also resets the header search box, not just the view mount
+    });
+  });
   makeKeyboardClickable();
 }
 
@@ -3563,6 +3593,50 @@ function openConfirmModal(message, onConfirm, confirmLabel){
   });
 }
 
+// Shared by the 6 "add new X" modals (Company/Contact/Task/Product/Competitor/
+// Event) — same shape every time: a few fields, Cancel + a primary Save button
+// that disables itself, reads the fields, calls the API, patches DATA, closes
+// the modal, re-renders and toasts. That wiring is what's collapsed here; each
+// call site still supplies its own field markup (dynamic <option> lists differ
+// too much per entity to be worth generating generically) and its own
+// build()/save() — field→payload mapping, which API to call, where the saved
+// row gets pushed, and any side effect (logActivity, tag-at-creation, a
+// conditional drawer refresh) are equally entity-specific.
+//   fieldsHtml: the modal body markup (same as before, just no longer inlined
+//     at the call site).
+//   saveLabel: the primary button's text, e.g. "Add account".
+//   errorVerb: fed to toastError() on failure, e.g. "add account".
+//   build(body): reads the DOM, validates, and returns the payload to save —
+//     or toasts the validation error itself and returns undefined to abort.
+//   save(payload): does the API call + DATA mutation (+ any side effect) and
+//     may return a function to run right after the re-render (e.g. refresh an
+//     open drawer) — everything else (closeModal/renderApp/toast) is generic.
+//   successToast: the toast shown once save() resolves.
+function openCreateModal({ title, fieldsHtml, saveLabel, errorVerb, build, save, successToast }){
+  openModal(`
+    <h3>${title}</h3>
+    ${fieldsHtml}
+    <div class="modal-actions">
+      <button class="btn" id="mCancel">Cancel</button>
+      <button class="btn btn-primary" id="mSave">${saveLabel}</button>
+    </div>
+  `, body=>{
+    body.querySelector('#mCancel').onclick = closeModal;
+    body.querySelector('#mSave').onclick = async ()=>{
+      const payload = build(body);
+      if (payload === undefined) return;   // build() already toasted why
+      const saveBtn = body.querySelector('#mSave');
+      saveBtn.disabled = true;
+      try{
+        const afterRender = await save(payload);
+        closeModal(); renderApp();
+        if (afterRender) afterRender();
+        toast(successToast);
+      }catch(e){ toastError(errorVerb, e); saveBtn.disabled = false; }
+    };
+  });
+}
+
 // PRD §13: "Remove account" is the one hard-delete that cascades across
 // several tables, so it gets a stronger confirm than openConfirmModal —
 // a breakdown of what's deleted + typing the account name.
@@ -3602,61 +3676,57 @@ function openRemoveAccountModal(c){
         DATA.tasks = DATA.tasks.filter(t=>t.companyId!==c.id);   // tasks.company_id cascades in the DB too
         logActivity('Removed an account', c.name); closeDrawer(); renderApp();
         toast('Account removed');
-      }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+      }catch(e){ toastError('remove', e); }
     };
     input.focus();
   });
 }
 
 function openAddCompanyModal(){
-  openModal(`
-    <h3>New account</h3>
-    <div class="field"><label>Company name</label><input id="mName"></div>
-    <div class="field"><label>Type</label><input id="mType" placeholder="e.g. Indigenous — Private E&P"></div>
-    <div class="field"><label>Summary</label><textarea id="mSummary" placeholder="Short profile…"></textarea></div>
-    <div class="field"><label>Priority</label><select id="mPriority">${PRIORITIES.map(p=>`<option value="${p}">${p}</option>`).join('')}</select></div>
-    <div class="modal-actions">
-      <button class="btn" id="mCancel">Cancel</button>
-      <button class="btn btn-primary" id="mSave">Add account</button>
-    </div>
-  `, body=>{
-    body.querySelector('#mCancel').onclick = closeModal;
-    body.querySelector('#mSave').onclick = async ()=>{
+  openCreateModal({
+    title: 'New account',
+    fieldsHtml: `
+      <div class="field"><label>Company name</label><input id="mName"></div>
+      <div class="field"><label>Type</label><input id="mType" placeholder="e.g. Indigenous — Private E&P"></div>
+      <div class="field"><label>Summary</label><textarea id="mSummary" placeholder="Short profile…"></textarea></div>
+      <div class="field"><label>Priority</label><select id="mPriority">${PRIORITIES.map(p=>`<option value="${p}">${p}</option>`).join('')}</select></div>
+    `,
+    saveLabel: 'Add account',
+    errorVerb: 'add account',
+    build(body){
       const name = body.querySelector('#mName').value.trim();
       if (!name){ toast('Name required'); return; }
-      const save = body.querySelector('#mSave'); save.disabled = true;
-      const company = {
+      return {
         id: crypto.randomUUID(), name, type: body.querySelector('#mType').value.trim()||'Uncategorised',
         priority: body.querySelector('#mPriority').value, stage:'research',
         summary: body.querySelector('#mSummary').value.trim(),
         painPoints:[], currentSolutions:[],
       };
-      try{
-        const saved = await companiesApi.create(company);
-        DATA.companies.push(saved);
-        logActivity('Added an account', name); closeModal(); renderApp(); toast('Account added');
-      }catch(e){ toast('Could not add account — ' + (e.message || 'try again')); save.disabled = false; }
-    };
+    },
+    async save(company){
+      const saved = await companiesApi.create(company);
+      DATA.companies.push(saved);
+      logActivity('Added an account', company.name);
+    },
+    successToast: 'Account added',
   });
 }
 
 function openAddContactModal(companyId){
   const options = DATA.companies.map(c=>`<option value="${c.id}" ${c.id===companyId?'selected':''}>${esc(c.name)}</option>`).join('');
-  openModal(`
-    <h3>New contact</h3>
-    <div class="field"><label>Company</label><select id="mCo">${options}</select></div>
-    <div class="field"><label>Name</label><input id="mName"></div>
-    <div class="field"><label>Position</label><input id="mPos"></div>
-    <div class="field"><label>Email</label><input id="mEmail"></div>
-    <div class="field"><label>Phone</label><input id="mPhone"></div>
-    <div class="field"><label>LinkedIn (domain/path, no https://)</label><input id="mLi" placeholder="linkedin.com/in/…"></div>
-    <div class="modal-actions">
-      <button class="btn" id="mCancel">Cancel</button>
-      <button class="btn btn-primary" id="mSave">Add contact</button>
-    </div>
-  `, body=>{
-    body.querySelector('#mCancel').onclick = closeModal;
-    body.querySelector('#mSave').onclick = async ()=>{
+  openCreateModal({
+    title: 'New contact',
+    fieldsHtml: `
+      <div class="field"><label>Company</label><select id="mCo">${options}</select></div>
+      <div class="field"><label>Name</label><input id="mName"></div>
+      <div class="field"><label>Position</label><input id="mPos"></div>
+      <div class="field"><label>Email</label><input id="mEmail"></div>
+      <div class="field"><label>Phone</label><input id="mPhone"></div>
+      <div class="field"><label>LinkedIn (domain/path, no https://)</label><input id="mLi" placeholder="linkedin.com/in/…"></div>
+    `,
+    saveLabel: 'Add contact',
+    errorVerb: 'add contact',
+    build(body){
       const co = companyById(body.querySelector('#mCo').value);
       const name = body.querySelector('#mName').value.trim();
       if (!co || !name){ toast('Company and name required'); return; }
@@ -3664,21 +3734,20 @@ function openAddContactModal(companyId){
       const linkedin = normalizeLinkedin(body.querySelector('#mLi').value);
       const { ok, errors } = validateChanged({email:''}, {email}, {email: emailRule});
       if (!ok){ toast(errors.email); return; }
-      const ct = {
+      return { co, ct: {
         id: crypto.randomUUID(), name,
         pos: body.querySelector('#mPos').value.trim(),
         email, phone: body.querySelector('#mPhone').value.trim(), linkedin,
         verified:false, lastContact:'', nextFollowUp:''
-      };
-      const save = body.querySelector('#mSave'); save.disabled = true;
-      try{
-        const saved = await contactsApi.create(co.id, ct);
-        co.contacts.push(saved);
-        logActivity('Added a contact', `${name} — ${co.name}`); closeModal(); renderApp();
-        if (ui.drawerCompanyId===co.id) openDrawer(co.id);
-        toast('Contact added');
-      }catch(e){ toast('Could not add contact — ' + (e.message || 'try again')); save.disabled = false; }
-    };
+      }};
+    },
+    async save({co, ct}){
+      const saved = await contactsApi.create(co.id, ct);
+      co.contacts.push(saved);
+      logActivity('Added a contact', `${ct.name} — ${co.name}`);
+      return ()=>{ if (ui.drawerCompanyId===co.id) openDrawer(co.id); };
+    },
+    successToast: 'Contact added',
   });
 }
 
@@ -3713,7 +3782,7 @@ function openEditContactModal(contactId){
           closeModal(); renderApp();
           if (ui.drawerCompanyId===co.id) openDrawer(co.id);
           toast('Contact deleted');
-        }catch(e){ toast('Could not delete — ' + (e.message || 'try again')); }
+        }catch(e){ toastError('delete', e); }
       });
     };
     body.querySelector('#mSave').onclick = async ()=>{
@@ -3734,7 +3803,7 @@ function openEditContactModal(contactId){
         closeModal(); renderApp();
         if (ui.drawerCompanyId===co.id) openDrawer(co.id);
         toast('Contact saved');
-      }catch(e){ toast('Could not save — ' + (e.message || 'try again')); save.disabled = false; }
+      }catch(e){ toastError('save', e); save.disabled = false; }
     };
   });
 }
@@ -3777,77 +3846,72 @@ function openEmailModal(contactId){
 function openAddTaskModal(companyId){
   const options = '<option value="">(General — no account)</option>' + DATA.companies.map(c=>`<option value="${c.id}" ${c.id===companyId?'selected':''}>${esc(c.name)}</option>`).join('');
   const todayIso = new Date().toISOString().slice(0,10);
-  openModal(`
-    <h3>New action</h3>
-    <div class="field"><label>Title</label><input id="mTitle" placeholder="e.g. Follow up on LinkedIn message"></div>
-    <div class="field"><label>Account</label><select id="mCo">${options}</select></div>
-    <div class="field"><label>Due date</label><input type="date" id="mDue" value="${todayIso}"></div>
-    <div class="field"><label>Priority</label><select id="mPriority">${PRIORITIES.map(p=>`<option value="${p}">${p}</option>`).join('')}</select></div>
-    <div class="modal-actions">
-      <button class="btn" id="mCancel">Cancel</button>
-      <button class="btn btn-primary" id="mSave">Add action</button>
-    </div>
-  `, body=>{
-    body.querySelector('#mCancel').onclick = closeModal;
-    body.querySelector('#mSave').onclick = async ()=>{
+  openCreateModal({
+    title: 'New action',
+    fieldsHtml: `
+      <div class="field"><label>Title</label><input id="mTitle" placeholder="e.g. Follow up on LinkedIn message"></div>
+      <div class="field"><label>Account</label><select id="mCo">${options}</select></div>
+      <div class="field"><label>Due date</label><input type="date" id="mDue" value="${todayIso}"></div>
+      <div class="field"><label>Priority</label><select id="mPriority">${PRIORITIES.map(p=>`<option value="${p}">${p}</option>`).join('')}</select></div>
+    `,
+    saveLabel: 'Add action',
+    errorVerb: 'add',
+    build(body){
       const title = body.querySelector('#mTitle').value.trim();
       if (!title){ toast('Title required'); return; }
-      const task = {
+      return {
         id: crypto.randomUUID(), title, companyId: body.querySelector('#mCo').value,
         due: body.querySelector('#mDue').value, priority: body.querySelector('#mPriority').value, done:false,
       };
-      const save = body.querySelector('#mSave'); save.disabled = true;
-      try{
-        const saved = await tasksApi.create(task);
-        DATA.tasks.push(saved);
-        closeModal(); renderApp();
-        if (ui.drawerCompanyId) openDrawer(ui.drawerCompanyId);
-        toast('Action added');
-      }catch(e){ toast('Could not add — ' + (e.message || 'try again')); save.disabled = false; }
-    };
+    },
+    async save(task){
+      const saved = await tasksApi.create(task);
+      DATA.tasks.push(saved);
+      return ()=>{ if (ui.drawerCompanyId) openDrawer(ui.drawerCompanyId); };
+    },
+    successToast: 'Action added',
   });
 }
 
 function openAddSolutionModal(){
   const companyOptions = DATA.companies.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
-  openModal(`
-    <h3>New product / offer</h3>
-    <div class="field"><label>Name</label><input id="mName" placeholder="e.g. Flare-Stack Thermal Survey"></div>
-    <div class="field"><label>Category / tag</label><input id="mTag" placeholder="e.g. Aerial, Subsea, Data…"></div>
-    <div class="field"><label>Kind</label><select id="mKind">${KIND_OPTIONS.map(k=>`<option value="${k}">${k}</option>`).join('')}</select></div>
-    <div class="field"><label>Status</label><select id="mStatus">${STATUS_OPTIONS.map(s=>`<option value="${s}">${s}</option>`).join('')}</select></div>
-    <div class="field"><label>Description</label><textarea id="mBlurb" placeholder="What it is and who it's for…"></textarea></div>
-    <div class="field"><label>Tag to a client now (optional)</label><select id="mCo"><option value="">— none yet —</option>${companyOptions}</select></div>
-    <div class="modal-actions">
-      <button class="btn" id="mCancel">Cancel</button>
-      <button class="btn btn-primary" id="mSave">Add product</button>
-    </div>
-  `, body=>{
-    body.querySelector('#mCancel').onclick = closeModal;
-    body.querySelector('#mSave').onclick = async ()=>{
+  openCreateModal({
+    title: 'New product / offer',
+    fieldsHtml: `
+      <div class="field"><label>Name</label><input id="mName" placeholder="e.g. Flare-Stack Thermal Survey"></div>
+      <div class="field"><label>Category / tag</label><input id="mTag" placeholder="e.g. Aerial, Subsea, Data…"></div>
+      <div class="field"><label>Kind</label><select id="mKind">${KIND_OPTIONS.map(k=>`<option value="${k}">${k}</option>`).join('')}</select></div>
+      <div class="field"><label>Status</label><select id="mStatus">${STATUS_OPTIONS.map(s=>`<option value="${s}">${s}</option>`).join('')}</select></div>
+      <div class="field"><label>Description</label><textarea id="mBlurb" placeholder="What it is and who it's for…"></textarea></div>
+      <div class="field"><label>Tag to a client now (optional)</label><select id="mCo"><option value="">— none yet —</option>${companyOptions}</select></div>
+    `,
+    saveLabel: 'Add product',
+    errorVerb: 'add',
+    build(body){
       const name = body.querySelector('#mName').value.trim();
       if (!name){ toast('Name required'); return; }
-      const product = {
-        id: crypto.randomUUID(), name, tag: body.querySelector('#mTag').value.trim()||'General',
-        kind: body.querySelector('#mKind').value, status: body.querySelector('#mStatus').value,
-        blurb: body.querySelector('#mBlurb').value.trim(), highlights:[],
+      return {
+        product: {
+          id: crypto.randomUUID(), name, tag: body.querySelector('#mTag').value.trim()||'General',
+          kind: body.querySelector('#mKind').value, status: body.querySelector('#mStatus').value,
+          blurb: body.querySelector('#mBlurb').value.trim(), highlights:[],
+        },
+        coId: body.querySelector('#mCo').value,
       };
-      const coId = body.querySelector('#mCo').value;
-      const save = body.querySelector('#mSave'); save.disabled = true;
-      try{
-        const saved = await productsApi.create(product);
-        DATA.solutions.push(saved);
-        if (coId){
-          const co = companyById(coId);
-          if (co){
-            await companiesApi.tagProduct(co.id, saved.id, 'Tagged at creation');
-            co.recommended = co.recommended.filter(r=>r.sol!==saved.id);
-            co.recommended.push({sol: saved.id, why: 'Tagged at creation'});
-          }
+    },
+    async save({product, coId}){
+      const saved = await productsApi.create(product);
+      DATA.solutions.push(saved);
+      if (coId){
+        const co = companyById(coId);
+        if (co){
+          await companiesApi.tagProduct(co.id, saved.id, 'Tagged at creation');
+          co.recommended = co.recommended.filter(r=>r.sol!==saved.id);
+          co.recommended.push({sol: saved.id, why: 'Tagged at creation'});
         }
-        closeModal(); renderApp(); toast('Product added');
-      }catch(e){ toast('Could not add — ' + (e.message || 'try again')); save.disabled = false; }
-    };
+      }
+    },
+    successToast: 'Product added',
   });
 }
 

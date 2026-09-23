@@ -243,6 +243,12 @@ button:focus-visible{outline-offset:1px;}
   font-family:var(--font-mono);font-size:10.5px;color:var(--faint);
   letter-spacing:.08em;text-transform:uppercase;
 }
+.view-loading{
+  font-family:var(--font-mono);font-size:10.5px;font-weight:400;
+  color:var(--faint);letter-spacing:.02em;
+  animation:view-loading-pulse 1.1s ease-in-out infinite;
+}
+@keyframes view-loading-pulse{0%,100%{opacity:.4;}50%{opacity:1;}}
 .search-wrap{position:relative;margin-left:auto;width:260px;}
 .search-wrap input{
   width:100%;
