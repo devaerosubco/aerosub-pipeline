@@ -1,0 +1,75 @@
+name: Backup
+
+# Weekly Postgres dump (data changes slowly). The free Supabase tier has no
+# managed backups, so this is the only one. Dumps via the Supavisor
+# session-mode pooler, NOT the "direct connection" host — that one is
+# IPv6-only on the free tier and GitHub-hosted runners have no IPv6, so it
+# silently fails to connect (PRD §13).
+#
+# Secrets required (repo Settings → Secrets and variables → Actions):
+#   SUPABASE_DB_PASSWORD  — the project's Postgres password
+# Optional, to also push a copy to Cloudflare R2 (else the GH Actions
+# artifact below, 90-day retention, is the only copy):
+#   R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID
+# Optional repo variable (Settings → Secrets and variables → Actions → Variables):
+#   R2_BUCKET — bucket name; R2 upload is skipped entirely if this is unset.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # every Monday, 06:00 UTC
+  workflow_dispatch:
+
+env:
+  # Public values — the same project ref/region baked into VITE_SUPABASE_URL
+  # and shown in DEPLOY.md. Not secrets; update here if the project ever moves.
+  SUPABASE_PROJECT_REF: fjjkhlgcdooxkqzbhvih
+  SUPABASE_DB_REGION: eu-west-2
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install postgresql-client-17 (matches the Supabase server major)
+        run: |
+          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsS https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17
+
+      - name: Dump the database via the Supavisor session pooler
+        env:
+          PGPASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: |
+          pg_dump \
+            -h "aws-0-${SUPABASE_DB_REGION}.pooler.supabase.com" \
+            -p 5432 \
+            -U "postgres.${SUPABASE_PROJECT_REF}" \
+            -d postgres \
+            -f backup.sql
+          gzip backup.sql
+          FILENAME="aerosub-backup-$(date -u +%Y%m%d).sql.gz"
+          mv backup.sql.gz "$FILENAME"
+          echo "FILENAME=$FILENAME" >> "$GITHUB_ENV"
+
+      - name: Upload as a workflow artifact (always-on fallback, 90-day retention)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.FILENAME }}
+          path: ${{ env.FILENAME }}
+          retention-days: 90
+
+      - name: Upload to Cloudflare R2 + prune to the newest ~12
+        if: ${{ vars.R2_BUCKET != '' }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+        run: |
+          aws s3 cp "$FILENAME" "s3://$R2_BUCKET/$FILENAME" --endpoint-url "$R2_ENDPOINT"
+          aws s3api list-objects-v2 --bucket "$R2_BUCKET" --endpoint-url "$R2_ENDPOINT" \
+            --query 'reverse(sort_by(Contents, &LastModified))[12:].Key' --output text \
+          | tr '\t' '\n' | while read -r key; do
+              [ -n "$key" ] && [ "$key" != "None" ] && aws s3 rm "s3://$R2_BUCKET/$key" --endpoint-url "$R2_ENDPOINT"
+            done

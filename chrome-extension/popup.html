@@ -39,6 +39,7 @@
   .btn.small{ width:auto; padding:5px 10px; font-size:11px; margin-top:0; }
   .status{ font-size:11px; color:var(--muted); margin-top:8px; min-height:14px; }
   .status.ok{ color:#1c7a52; }
+  .hint-warn{ background:#fff6ec; border:1px solid var(--warm); color:#8a5a12; border-radius:6px; padding:7px 9px; font-size:11px; margin-bottom:10px; }
   .count-row{ display:flex; align-items:center; justify-content:space-between; margin-top:10px; }
   .count-row .n{ font-size:11.5px; color:var(--muted); }
   .clip-list{ max-height:230px; overflow-y:auto; margin-top:8px; }
@@ -63,6 +64,7 @@
   </div>
 
   <div class="panel active" id="panel-capture">
+    <div class="hint-warn" id="signedOutHint" style="display:none;">Not signed in — this clip will be queued locally until you sign in on the <b>Account</b> tab.</div>
     <label>Page title</label>
     <input id="title" placeholder="Loading current tab…">
     <label>URL</label>

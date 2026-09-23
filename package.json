@@ -19,6 +19,8 @@
     "test:crossbrowser": "node scripts/crossbrowser-smoke.mjs",
     "test:ext": "node chrome-extension/build.mjs && node scripts/ext-save-test.mjs && node scripts/ext-popup-test.mjs",
     "ext:build": "node chrome-extension/build.mjs",
+    "ext:build:prod": "node chrome-extension/build.mjs chrome-extension/.env.production",
+    "ext:zip": "npm run ext:build:prod && node chrome-extension/zip.mjs",
     "check:secrets": "bash scripts/check-no-secrets.sh"
   },
   "repository": {
@@ -35,6 +37,7 @@
   "homepage": "https://github.com/devaerosubco/aerosub-pipeline#readme",
   "private": true,
   "devDependencies": {
+    "archiver": "^8.0.0",
     "jsdom": "^30.0.1",
     "playwright": "^1.62.1",
     "supabase": "^2.116.0",

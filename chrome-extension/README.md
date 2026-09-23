@@ -16,16 +16,31 @@ node chrome-extension/build.mjs      # or: npm run ext:build
 ```
 
 That reads `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` from the repo
-`.env` and writes a ready-to-load extension to **`chrome-extension/dist/`**
-(only the public anon key is baked in — never a service key). Re-run it
-whenever those values change (e.g. pointing at the production project).
+`.env` (local Supabase) and writes a ready-to-load extension to
+**`chrome-extension/dist/`** (only the public anon key is baked in — never a
+service key).
 
-## Install (unpacked — not on the Chrome Web Store)
+## Sharing it with the team (no Chrome Web Store — that costs $5 and requires
+review; this skips both)
 
-1. Open Chrome → `chrome://extensions`
-2. Turn on **Developer mode** (top-right)
-3. **Load unpacked** → select **`chrome-extension/dist/`**
-4. Pin the Aerosub icon to your toolbar
+1. Create `chrome-extension/.env.production` (git-ignored, same shape as the
+   repo `.env`) with the **prod** Supabase URL + anon key — the same ones
+   Cloudflare Pages uses to build the app. Get them from `supabase projects
+   api-keys --project-ref <ref>` or the Supabase dashboard.
+2. `npm run ext:zip` — builds against that prod env and writes
+   **`chrome-extension/aerosub-clipper.zip`**.
+3. Send teammates that zip (Slack, Drive, whatever). They:
+   - Unzip it somewhere permanent (Chrome loads it from that folder — don't
+     delete it after installing).
+   - `chrome://extensions` → turn on **Developer mode** (top-right) →
+     **Load unpacked** → select the unzipped folder.
+   - Pin the Aerosub icon to their toolbar.
+4. When the extension code changes: re-run `npm run ext:zip`, resend the
+   zip, teammates repeat step 3 (or replace the folder contents and hit the
+   refresh icon on the extension's card in `chrome://extensions`).
+
+For your own local testing against local Supabase, `npm run ext:build` +
+**Load unpacked** on `chrome-extension/dist/` still works as before.
 
 ## Use it
 

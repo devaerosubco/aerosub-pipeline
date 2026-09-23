@@ -1,0 +1,20 @@
+name: Keepalive
+
+# Free Supabase projects pause after 7 days with no API traffic. This pings
+# the REST root every 3 days so the project never gets there. If it pauses
+# anyway, the fix is a one-click "Restore" in the Supabase dashboard — this
+# workflow just makes that unnecessary (PRD §13).
+
+on:
+  schedule:
+    - cron: "0 6 */3 * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase REST root
+        run: |
+          curl -fsS -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            "https://fjjkhlgcdooxkqzbhvih.supabase.co/rest/v1/" > /dev/null

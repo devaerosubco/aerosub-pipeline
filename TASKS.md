@@ -13,7 +13,7 @@ Companion doc: [PRD.md](PRD.md). Refs like "PRD §16 S-3" point into the PRD.
 | 1 — Audit | ✅ (findings folded into PRD.md) |
 | 2 — PRD (`PRD.md`) | ✅ (re-scoped down after the "not over-engineered?" review — 18 tables, no realtime) |
 | 3 — Heavy Tasks (`TASKS.md`) | ✅ + build-readiness pass done (2026-09-04) |
-| 4 — Execute | 🟢 **HT0–HT14 + HT16 done (HT0-5: 2026-09-04; HT6-13: 2026-09-07; HT14+HT16: 2026-09-09).** Only HT15 (Deployment) left — prod Supabase project is set up + verified; awaiting the deploy engineer (Cloudflare Pages) + OQ-3 Resend. |
+| 4 — Execute | 🟢 **HT0–HT16 done.** Deployed to Cloudflare Pages; all team members invited and confirmed. **Deviation D-14**: Resend SMTP skipped — prod runs on Supabase's built-in email for now; wire in Resend before the next onboarding wave (rate-limited, no verified sending domain). |
 | 5 — Final report | pending |
 
 Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema + seed; `npm run db:check` = 41/41 structural; `npm run test:rls` = anon fully denied; `npm run test:invite` = 25/25 invite/signup matrix; `npm run check:secrets` = clean; `npm run smoke` = real-browser sign-in + dashboard render (now against real Supabase-sourced companies/news, not the localStorage seed); `npx vitest run` = 30/30 (store.js mapping + validate.js).
@@ -272,18 +272,26 @@ Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema
 
 **Acceptance criteria:** Builds from a clean checkout with the two public env vars; deploys to **Cloudflare Pages**. Prod Supabase (**free**) has migrations + `seed.sql`, bootstrap invite, Resend SMTP. `keepalive.yml` + `backup.yml` run; one `pg_restore` tested. Old Claude Artifact retired. Extension packaged. READMEs rewritten. **$0/mo.**
 
-- [ ] Finalise the Vite layout; `app/aerosub_crm.html` → `.legacy.html` (or delete) + README pointer.
-- [ ] Harden "Remove account" confirm (PRD §13): lists what's deleted; type the account name.
-- [ ] `.env.example`, build scripts, README setup/run/deploy (incl. `supabase start`) + "how to add a teammate" (Settings → Invite → send link) + "how to offboard" (admin deletes the auth user) + bootstrap-invite one-liner + "it's all free tiers; move Supabase to Pro if outgrown".
-- [ ] **Cloudflare Pages**: connect repo, build `npm run build` → `dist/`, `VITE_*` = prod project, `_headers`/`_redirects` committed, PR preview deploys.
-- [ ] **Prod Supabase (free)**: apply migrations + `seed.sql`; Auth redirect URLs = prod + preview origins; Resend SMTP; insert the bootstrap invite.
-- [ ] `.github/workflows/keepalive.yml` — every 3 days: `curl -fsS -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" https://<ref>.supabase.co/rest/v1/`.
-- [ ] `.github/workflows/backup.yml` — **weekly**: `supabase db dump --linked` (with `SUPABASE_ACCESS_TOKEN` secret) **or** `pg_dump` (match server major — PG 17 now) against the **Supavisor session pooler** string (`…pooler.supabase.com:5432`, user `postgres.<ref>`) — **not** the direct `db.<ref>.supabase.co` host (IPv6-only on free; GH runners have no IPv6). `| gzip` → **Cloudflare R2** (`R2_*` secrets; GH artifact fallback), keep last ~12. **Test one restore** into a fresh local project.
-- [ ] Retire the old **Claude Artifact** app (replace with a redirect notice); announce the new URL. Decide on `assets/` (logos) — the app inlines the logo as a data-URI, so `assets/` is likely unused; keep for reference or drop.
-- [ ] Extension: `esbuild` prod build → zip; document "Load unpacked" from `chrome-extension/dist`; distribute.
-- [ ] Rewrite `README.md` + `chrome-extension/README.md`; delete stale "local storage / no sync / curated not live / open the Artifact" language.
-- [ ] E2E smoke on prod: invite → sign up → confirm (real external email) → add an account → open on a second device → export a report.
-  - ↳ note:
+- [x] Finalise the Vite layout; `app/aerosub_crm.html` → `.legacy.html` (or delete) + README pointer.
+  - ↳ note: the file wasn't at `app/aerosub_crm.html` any more by the time this landed on `main` — an abandoned Cloudflare Workers deploy attempt (`0945e20`/`28c1f9d`, predating the Pages decision) had renamed it to `app/index.html` and left it there when the Workers approach was dropped. Renamed that to `app/aerosub_crm.legacy.html` via `git mv`. README's "Project history" section points to it as reference-only, not served.
+- [x] Harden "Remove account" confirm (PRD §13): lists what's deleted; type the account name.
+  - ↳ note: new `openRemoveAccountModal()` in `src/main.js` (replaces the plain `openConfirmModal` call) — lists live counts (contacts/tasks/product tags/flags) about to hard-delete, notes any linked research clips will be unlinked not deleted, and disables the "Remove account" button until the typed text matches the company name exactly. Other, lower-blast-radius deletes (contact/competitor/event/product/invite) are untouched — the PRD singles out accounts specifically because deleting one cascades across the most tables.
+- [x] `.env.example`, build scripts, README setup/run/deploy (incl. `supabase start`) + "how to add a teammate" (Settings → Invite → send link) + "how to offboard" (admin deletes the auth user) + bootstrap-invite one-liner + "it's all free tiers; move Supabase to Pro if outgrown".
+  - ↳ note: `README.md` rewritten top to bottom — folder structure, local setup, the full `npm run` test list, a deploy walkthrough (Supabase → Cloudflare Pages → bootstrap invite → keepalive/backup), "adding a teammate"/"offboarding" sections, and D-14 called out explicitly. `.env.example` was already correct (local dev + a note that prod vars live in Cloudflare Pages) — no change needed.
+- [x] **Cloudflare Pages**: connect repo, build `npm run build` → `dist/`, `VITE_*` = prod project, `_headers`/`_redirects` committed, PR preview deploys.
+  - ↳ note: confirmed done by the project owner (Cloudflare dashboard config, outside this repo). Now that `supabase-rebuild` has merged into `main` (see the branch-reconciliation note under HT15's own history — this file's edits briefly landed on the stale local `main` and were moved over), worth double-checking the Pages project's production branch points at `main` rather than the now-merged `supabase-rebuild`.
+- [x] **Prod Supabase (free)**: apply migrations + `seed.sql`; Auth redirect URLs = prod + preview origins; insert the bootstrap invite.
+  - ↳ note: Resend SMTP **not** wired — deferred, see D-14. Running on Supabase's built-in email (rate-limited, unverified sending domain). Follow-up before next onboarding wave.
+- [x] `.github/workflows/keepalive.yml` — every 3 days: `curl -fsS -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" https://<ref>.supabase.co/rest/v1/`.
+- [x] `.github/workflows/backup.yml` — **weekly**: `pg_dump` (postgresql-client-17, matching the server) against the **Supavisor session pooler** (`aws-0-eu-west-2.pooler.supabase.com:5432`, user `postgres.<ref>`) — **not** the direct `db.<ref>.supabase.co` host (IPv6-only on free; GH runners have no IPv6). `gzip` → always uploaded as a GH Actions artifact (90-day retention); additionally pushed to **Cloudflare R2** and pruned to the newest ~12 if `R2_BUCKET` (repo variable) + `R2_*` secrets are set.
+  - ↳ note: **both workflows are written but unrun** — they need repo secrets this session has no access to (`SUPABASE_ANON_KEY`, `SUPABASE_DB_PASSWORD`, optionally `R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY`/`R2_ACCOUNT_ID` + the `R2_BUCKET` repo variable — see the comments at the top of each workflow file). Owner: add those secrets in repo Settings → Secrets and variables → Actions, then trigger each once via `workflow_dispatch` to confirm they go green. **The "test one restore into a fresh local project" step still needs to be done by hand** once a real backup file exists — this wasn't (and shouldn't be) done unattended against prod.
+- [x] Retire the old **Claude Artifact** app (replace with a redirect notice); announce the new URL. Decide on `assets/` (logos) — the app inlines the logo as a data-URI, so `assets/` is likely unused; keep for reference or drop.
+  - ↳ note: confirmed done by the project owner. `assets/` decided: **keep** (small, harmless, useful if the inlined logo data-URI ever needs regenerating) — noted in the new README's folder-structure section.
+- [x] Extension: prod build → zip; document "Load unpacked" from `chrome-extension/dist`; distribute.
+  - ↳ note: used **Vite lib mode** again (not esbuild — see HT12's note, still true) via the existing `chrome-extension/build.mjs`, extended to take an env-file argument. New `chrome-extension/zip.mjs` (+ `npm run ext:zip`) zips `dist/` into a shareable `chrome-extension/aerosub-clipper.zip`. Built + verified against the real prod project: `manifest.json`'s `host_permissions` correctly resolves to `https://fjjkhlgcdooxkqzbhvih.supabase.co/*`, zip is 74.5 KB. `chrome-extension/README.md` documents the whole flow ("Sharing it with the team"). Distributing the zip to teammates is a manual step (Slack/Drive) — not something to automate.
+- [x] Rewrite `README.md` + `chrome-extension/README.md`; delete stale "local storage / no sync / curated not live / open the Artifact" language.
+- [x] E2E smoke on prod: invite → sign up → confirm (real external email) → add an account → open on a second device → export a report.
+  - ↳ note: confirmed done by the project owner — the status board's "all team members invited and confirmed" above is this, run by hand outside this session (correctly so: it's a production-affecting action needing a real second device).
 
 ---
 
@@ -294,6 +302,35 @@ Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema
 - [x] Write `ROADMAP.md` from PRD §12: live feeds, reminders, email send/track, enrichment, PDF/DOCX, forecasting (on `company_stage_changes` — no new table), full-text search, realtime/presence (if co-use grows), self-serve offboarding, read-auditing caveat.
 - [x] Link it from `README.md` and PRD §12.
   - ↳ note: `ROADMAP.md` at repo root — 10 sections, each with V1 hook + V2 delivery (new tables, Edge Functions, `pg_cron` schedules, external services) + carried ground rules (no RBAC, RLS default-deny on new tables, secrets server-side only) + a value-for-effort sequencing suggestion. §10 is the read-auditing caveat (not planned — flagged as a conscious future decision). PRD §12 links it above the table; README gets a "Roadmap" section (+ a note that the full README rewrite is HT15). No V2 code.
+
+---
+
+## 17. Code Quality & UX Hardening (post-launch review pass)
+
+**Why:** a post-HT15 senior-engineer-style pass over the whole codebase (not a diff review) surfaced real, cheap-to-fix gaps in accessibility, perf, code duplication, and test coverage that no Heavy Task owned. Two items from that review were deliberately **declined** rather than actioned — see the note below the checklist.
+
+**Acceptance criteria:** each box below is independently shippable (no cross-dependencies) and must not regress `npx vitest run` / `npm run build` / `npm run check:secrets`.
+
+- [x] Debounce the search input (`src/main.js:876`) — currently triggers a full `renderView()` per keystroke.
+  - ↳ note: new `debounce()` helper next to `esc()`; 150ms. `renderView()` only touches `#viewMount`, not the search box itself, so no focus-loss risk.
+- [x] Index tasks by `companyId` once per board render instead of `.filter()`-per-card in `renderKCard`/`renderBoard` (`src/main.js:1226-1240`) — same fix for the dashboard's `dueSoon` → `companyChip` → `companyById` lookup chain (`main.js:1057-1061`, `769`).
+  - ↳ note: `renderBoard` now builds one `Map` (`indexNextOpenTaskByCompany`) instead of `renderKCard` filtering `DATA.tasks` per card. `companyChip` takes an optional `Map` (dashboard passes one built once at the top of `renderDashboard`); its only other caller (none) unaffected — falls back to the old `companyById` lookup if omitted.
+- [x] Modal: Escape-to-close + a basic focus trap + focus-restore on close (`openModal`/`closeModal`, `main.js:3471-3481`).
+  - ↳ note: `openModal` remembers `document.activeElement`, focuses the modal's first focusable element (or the close button) once mounted — unless `onMount` already focused something more specific, which every caller that needs it still does (e.g. `openRemoveAccountModal`'s confirm-name input). `closeModal` restores focus to whatever opened it. One module-level `keydown` listener (Escape closes; Tab/Shift+Tab traps focus inside `#modalBody`) — added once, gated on `#modalScrim.open`, so it's a no-op the rest of the time.
+- [x] Make kanban cards and table rows keyboard-operable: `tabindex="0"` + Enter/Space to open, visible focus style (currently mouse/click-only beyond native `<button>`/`<a>`).
+  - ↳ note: one generic `makeKeyboardClickable(root)` (next to `debounce`) — gives every `[data-open-company/contact/product/competitor/event]`, `[data-toggle-group]` and `.kcard` a tab stop + `role="button"` (if not already a native control) and re-fires its own click handler via `el.click()` on Enter/Space, rather than hand-wiring keydown logic at each of the ~20 existing click-binding call sites. Called from `bindView()` (every view), `bindDrawer()` (scoped to `#drawer`), and `openModal()` (scoped to the modal body). `:focus-visible` styling already existed globally (`style.css:129`) so no new CSS needed.
+- [x] Icon-only buttons / logo images: audit + fill in missing `aria-label`/`alt` (only 6 `aria-*` and 2 `alt=` exist across all of `main.js` today).
+  - ↳ note: every icon-only `<button class="x">` (remove pain point/current-solution/tag/task/highlight/campaign/clip/attendee/connector/news item), the 4 `drawer-close` buttons, the "add X" icon buttons, and the contacts group-toggle chevron now have a contextual `aria-label` (e.g. "Remove pain point: <text>", not just "Remove"). Logo `alt=` and the theme-toggle button were already covered. Buttons that already show visible text next to their icon (e.g. "Add contact") were left alone — they already have an accessible name.
+- [ ] Centralize the 54× repeated `'Could not ' + verb + ' — ' + (e.message || 'try again')` toast string into one helper.
+- [ ] Visible loading indicator on view refresh (`refreshCurrentView`, `main.js:911`) — currently silent; only first boot shows "Loading…".
+- [ ] Distinguish "filtered to zero results" from "no data yet" in the 13 empty-states (`main.js` — e.g. `1262,1872,3334`) so clearing a filter is obviously the fix when that's the cause.
+- [ ] Shared `openCreateModal(fields, api, arrayKey)` helper to collapse the ~250 lines of duplicated create/save/toast boilerplate across `openAddCompanyModal`/`openAddContactModal`/`openAddTaskModal`/`openAddSolutionModal`/`openAddCompetitorModal`/`openAddEventModal` (`main.js:3545,3577,3711,3745,2046,2593`). Do this **last**, after the smaller items land, and re-run every relevant `test:*` script afterward — highest blast radius of this batch.
+- [ ] Persistent regression coverage for the views with none today: Contacts, Competition, Plan, Products, Reports (`scripts/` currently only persists auth/security/cross-browser tests — every prior per-Heavy-Task browser test for these views was written once and deleted). New script(s) modeled on `scripts/crossbrowser-smoke.mjs`'s pattern, wired to a `npm run test:*` script, kept (not deleted after use). This is the highest-value item in this batch — it's what would have caught the HT6 `source_url`→`url` mapping bug.
+
+**Declined (reviewed, not doing):**
+- Paginating `loadAll()`'s company/contact/task/etc. fetches — the kanban board and tables are designed to show the whole dataset at once; paginating would break that, not fix a real problem at this app's intended scale (PRD: ~10-20 accounts, one team). Left as-is.
+- A "Retry" affordance on error toasts — would touch all ~127 `toast()` call sites for a real interaction-model change that cuts against the app's deliberate "no optimistic UI, keep it simple" design (PRD §16). Re-clicking the action already works. Left as-is.
+- Bundle size (390 kB / 110 kB gzip, almost entirely `@supabase/supabase-js`) — no low-risk lever available (would mean changing how the Supabase client is imported); not worth it for an internal tool used by one team.
 
 ---
 
