@@ -14,7 +14,7 @@ Companion doc: [PRD.md](PRD.md). Refs like "PRD §16 S-3" point into the PRD.
 | 2 — PRD (`PRD.md`) | ✅ (re-scoped down after the "not over-engineered?" review — 18 tables, no realtime) |
 | 3 — Heavy Tasks (`TASKS.md`) | ✅ + build-readiness pass done (2026-09-04) |
 | 4 — Execute | 🟢 **HT0–HT16 done.** Deployed to Cloudflare Pages; all team members invited and confirmed. **Deviation D-14**: Resend SMTP skipped — prod runs on Supabase's built-in email for now; wire in Resend before the next onboarding wave (rate-limited, no verified sending domain). |
-| 5 — Final report | pending |
+| 5 — Final report | ✅ (2026-09-23, below) |
 
 Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema + seed; `npm run db:check` = 41/41 structural; `npm run test:rls` = anon fully denied; `npm run test:invite` = 25/25 invite/signup matrix; `npm run check:secrets` = clean; `npm run smoke` = real-browser sign-in + dashboard render (now against real Supabase-sourced companies/news, not the localStorage seed); `npx vitest run` = 30/30 (store.js mapping + validate.js).
 
@@ -343,9 +343,61 @@ Local stack is up (`supabase start`, PG 17.6). `npm run db:reset` = clean schema
 
 ## Final Report (Step 5) — when HT0–16 are all `[x]`
 
-- What was built:
-- Deviations (PRD §15, D-1…D-11) and why:
-- Enhancements (PRD §17, E-1…E-3):
-- Deliberately cut / deferred (PRD §16 — realtime, optimistic UI, child tables, DB sanitisation, self-serve offboarding):
-- Accepted limitations (last-write-wins; no live updates; bounded client loads; weekly backup granularity):
-- V2 roadmap: see `ROADMAP.md`.
+### What was built
+
+The single-file `localStorage` prototype (`app/aerosub_crm.html`) is now a small multi-user web app on Supabase: real per-person accounts behind Row Level Security, one shared Postgres database, every prototype feature intact, no feature lost.
+
+- **Frontend**: wrapped in Vite (HT0) with zero behaviour change first, then the data layer split into modules (`store.js`, `api.js`, `api/*.js` per entity, `auth.js`, `validate.js`) as each view was rewired (HT4–HT12); the render/UI code (`main.js`) stayed one file per D-1.
+- **Schema**: 18 tables (PRD §6) via 12 committed, timestamped migrations — `enable`+`force` RLS on all 18, 66 policies, `is_member()`/`set_updated_at()`/`handle_new_user()`/`log_stage_change()` + a `profiles` and `invites` column-lock trigger, all owned by a `BYPASSRLS` role.
+- **Auth**: invite-link signup only (no open signup, no RBAC — any member can do anything), password reset, a profile-less "ask a teammate for a new invite" screen, and a `guardMembership()` hardening pass that catches a session whose `profiles` row disappeared mid-visit.
+- **Every view rewired off `localStorage` onto Supabase**: Dashboard, Companies (kanban + table, drag-to-stage, E-1 identity edit, delete-cascade), Contacts (global list, mark-contacted, promote-from-research), Competition (E-1 identity edit, campaign CRUD), Research (manual add + Chrome-extension import + "load older"), Plan (general + per-company tasks), Products & Offers (E-1 identity edit, E-2 re-tag), Reports (sandboxed preview, CSP-hardened `.html`/`.md` export), Events, Settings (team, invites, connectors, activity log).
+- **Chrome extension** rewired to write `research_clips` directly when signed in + online, queue in `chrome.storage.local` and sync later when offline/signed-out; anon-key-only bundle; MV3; packaged as a distributable zip.
+- **Security**: 4-layer input handling (`esc()` on render, CSP on every export, DB `CHECK` constraints, `validate.js` client-side), an XSS matrix planted in every free-text field of every table and walked through every view + export (`test:xss`), `_headers`/`_redirects` with HSTS/CSP/frame-deny/COOP (`test:headers`), and a secret scanner wired as a pre-commit hook.
+- **Deployment**: Cloudflare Pages (free, unmetered), prod Supabase (free) with migrations + seed + bootstrap invite, weekly `pg_dump` backup + 3-day keepalive GitHub Actions, old Claude Artifact retired.
+- **Post-launch hardening (HT17)**: a code-quality/a11y pass (debounced search, indexed board lookups, modal focus-trap/Escape/keyboard-operable cards, `aria-label`s) followed by a second pass finishing the batch — a centralized `toastError()` helper (61 call sites), a visible "Refreshing…" indicator on view refetch, filtered-vs-empty-state messaging with a "Clear filters" action, a shared `openCreateModal()` helper collapsing ~250 duplicated lines across the 6 "add new X" modals, and `scripts/view-regression.mjs` (`npm run test:views`, kept) as the first persistent regression coverage for Contacts/Competition/Plan/Products/Reports.
+
+**Test coverage at handoff**: `npx vitest run` 46/46 · `npm run db:check` 41/41 · `npm run test:rls` 39/39 · `npm run test:invite` 30/30 · `npm run test:xss` 6/6 · `npm run test:headers` 11/11 · `npm run test:ext` 23/23 · `npm run smoke` 7/7 · `npm run test:crossbrowser` 14/14 · `npm run test:views` 21/21 · `npm run check:secrets` clean.
+
+### Deviations from the prototype (PRD §15, D-1…D-14) and why
+
+- **D-1** — single HTML file → minimal Vite project (data layer split into modules as each was rewired; UI stayed one file). One static deploy, no backend, per the brief.
+- **D-2** — activity log is delete-able ("Clear log" preserved; no role model to restrict it, insert stays attribution-forced and immutable). Not tamper-evident — accepted for a small trusted team.
+- **D-3** — `permission`/`PERMISSIONS`/Admin-Editor-Viewer removed as dead code (RBAC forbidden by the brief). Any member can do anything.
+- **D-4** — shared passcode + `genPasscode` + bypass flag → real Supabase Auth, invite-link signup. First member is a hand-inserted invite; no open signup.
+- **D-5** — news dismissal is team-wide via `news_items.dismissed_at` (was a per-browser `dismissedNewsIds` array) — same effect, shared instead of local.
+- **D-6** — `claude.use('downloads')` removed from all 5 export sites → `Blob` + `<a download>` (the app no longer runs inside that sandbox).
+- **D-7** — *(withdrawn)* seeded contacts already got ids via the existing stamping loop; no change needed.
+- **D-8** — `meta.createdAt` dropped (unused in the UI).
+- **D-9** — the sidebar's destructive "Import data (replace)" was removed rather than ported — a wholesale-replace can't safely touch a shared Supabase DB from one client. An upsert-merge importer was scoped as a replacement but deferred (OQ-4: the founder confirmed the seed is the only dataset that matters) — JSON export remains the break-glass snapshot.
+- **D-10** — *(withdrawn — see S-7)* scalar lists (`pain_points`, `current_solutions`, `highlights`, `benefits`) stay `text[]` columns, not child tables — the concurrency argument for child tables doesn't hold at this usage pattern.
+- **D-11** — `tasks.company_id` is `ON DELETE CASCADE` (matches the prototype); general tasks are `company_id IS NULL` and survive an account delete.
+- **D-12** — `LIVE_NEWS_SNAPSHOT`, `mergeLiveNewsSnapshot()`, and `dismissedNewsIds` deleted outright — the DB is now the single source of news; the V2 news-feed job (§12) will write `news_items` directly instead of merging a client-side snapshot.
+- **D-13** — (HT0) removed one malformed, provably-zero-effect CSS rule (`lightningcss` rejected it at build time).
+- **D-14** — (HT15) **Resend SMTP skipped for launch.** Prod auth runs on Supabase's built-in email instead — rate-limited (2/hr default) and not deliverability-guaranteed (no verified sending domain). All initial team members were invited and confirmed successfully under this setup, but it will bite on clustered password resets or once the team outgrows the hourly cap. Resend wiring is scoped and ready in PRD §5.6 — pick it up before the next onboarding wave or the first reported "didn't get my email."
+
+### Enhancements over the prototype (PRD §17, E-1…E-3)
+
+- **E-1 — Editable identity fields.** The prototype couldn't rename a company/competitor/product or edit type/summary/hq/website (only events had this). Inline edit added everywhere, matching the existing event-details editor pattern.
+- **E-2 — Re-tagging a product updates its rationale** instead of creating a duplicate tag row (`company_products` has `unique (company_id, product_id)` + an upsert-on-conflict).
+- **E-3 — Editable own-profile name/department** in Settings.
+
+### Deliberately cut / deferred (PRD §16 — systems-design decisions, S-1…S-17)
+
+- **No realtime** (S-3) — refetch-on-navigate covers "see everyone's latest data" for a tool used rarely and mostly solo; a realtime channel + echo suppression + focus-safe re-rendering + conflict prompts wasn't worth it.
+- **No optimistic UI** (S-4) — `await` the write, then patch + render. A save is invisible at this latency; skipping it removes all revert-on-failure logic.
+- **Scalar lists stay `text[]`, not child tables** (S-7) — 4 fewer tables, 16 fewer policies; the concurrency case for child tables needs simultaneous editing of one record, which doesn't happen at this usage level.
+- **No DB-trigger input sanitisation** (S-11) — `esc()` on render + export CSP + `CHECK` constraints + `validate.js` is the accepted XSS story for an all-trusted-users tool; a `scrub_text` trigger layer is available hardening, not a V1 requirement.
+- **Self-serve offboarding deferred** (§5.7, S-8) — removing a person is an admin deleting the `auth.users` row in the Supabase dashboard (cascades `profiles`; `activity_log.actor_name` snapshots survive). Rare event, not worth a UI.
+- **Also deferred, lower priority**: the upsert-merge "Migrate my local data" importer (D-9, OQ-4 — not needed, seed is the only dataset); test-infra cleanup C1/C2 from the HT14 review pass (extracting the copy-pasted member-bootstrap helper across 7 test scripts into one shared module; a `.neq`→`.not(...,'is',null)` intent-clarity tweak in `activity.js`) — both behaviour-neutral, left open in HT14's checklist for whoever picks this codebase back up.
+
+### Accepted limitations
+
+- **Last-write-wins, no merge UI** (S-5) — concurrent edits are near-impossible at this usage; if two edits collide, the later write wins and the other person sees current text on next open.
+- **No live updates while watching** — a teammate's change only appears on your next navigate or an explicit "Refresh" (now with a visible "Refreshing…" indicator, HT17).
+- **Bounded client loads** — `research_clips` (200) and `activity_log` (100) load newest-first with "load more"; every other table loads whole (small at this scale, PRD §16 S-2).
+- **Weekly backup granularity** — `pg_dump` runs weekly via GitHub Actions (plus a 3-day keepalive so the free Supabase project doesn't pause); a restore between backups loses up to a week, accepted for a $0/mo internal tool. One `pg_restore` still needs a hands-on test against a real backup file once one exists (HT15 note).
+- **Prod email is rate-limited** — see D-14 above; the practical ceiling on password resets/invites until Resend is wired.
+
+### V2 roadmap
+
+See [ROADMAP.md](ROADMAP.md) — live feeds, reminders, email send/track, enrichment, PDF/DOCX export, pipeline forecasting (on the existing `company_stage_changes` history, no new table), full-text search, realtime/presence (if co-use grows), self-serve offboarding, and the read-auditing caveat, each with its V1 hook and V2 delivery plan.
