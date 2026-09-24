@@ -7,6 +7,7 @@ import {
   connectorFromRow, activityFromRow, categoryFromRow,
   serviceFromRow, serviceToRow, companyServiceFromRow,
   quoteTemplateFromRow, quoteTemplateToRow, quoteFromRow, quoteToRow, quoteLineItemFromRow, quoteLineItemToRow,
+  rfqFromRow, rfqToRow, rfqItemFromRow, rfqItemToRow,
 } from './store.js';
 
 describe('companies', () => {
@@ -321,5 +322,41 @@ describe('quotes (V2 HT-D)', () => {
     expect(back.itemType).toBe('product');
     expect(back.qty).toBe(2);
     expect(back.markupMultiplier).toBe(1.3);
+  });
+
+  it('round-trips sourceRfqId (V2 HT-E — the RFQ -> quote link)', () => {
+    const row = quoteToRow({ kind: 'Quote', sourceRfqId: 'rfq1' });
+    expect(row.source_rfq_id).toBe('rfq1');
+    const back = quoteFromRow({ id: 'q3', kind: 'Quote', source_rfq_id: 'rfq1' });
+    expect(back.sourceRfqId).toBe('rfq1');
+  });
+});
+
+describe('rfqs (V2 HT-E)', () => {
+  it('round-trips an RFQ through rfqToRow -> rfqFromRow', () => {
+    const app = { title: 'Amni RFQ 7972', reference: 'RFQ 7972', companyId: 'amni', parentRfqId: '', notes: 'n' };
+    const row = rfqToRow(app);
+    expect(row.title).toBe(app.title);
+    expect(row.company_id).toBe('amni');
+    const back = rfqFromRow({ id: 'rfq1', status: 'draft', ...row });
+    expect(back.title).toBe(app.title);
+    expect(back.reference).toBe(app.reference);
+    expect(back.status).toBe('draft');
+  });
+
+  it('rfqToRow never emits status or assigned_to (admin-only, set via dedicated setters)', () => {
+    const row = rfqToRow({ title: 'X', status: 'won', assignedTo: 'someone' });
+    expect(row.status).toBeUndefined();
+    expect(row.assigned_to).toBeUndefined();
+  });
+
+  it('round-trips an rfq_item through rfqItemToRow -> rfqItemFromRow, incl. vendor fields', () => {
+    const app = { rfqId: 'rfq1', itemType: 'service', itemId: 's1', description: 'ROV Survey', vendorName: 'Acme ROV', vendorVerified: true, qty: 1, unitCost: 5000, markupMultiplier: 1.3 };
+    const row = rfqItemToRow(app);
+    expect(row.vendor_verified).toBe(true);
+    const back = rfqItemFromRow({ id: 'ri1', ...row });
+    expect(back.vendorName).toBe('Acme ROV');
+    expect(back.vendorVerified).toBe(true);
+    expect(back.itemType).toBe('service');
   });
 });

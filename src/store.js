@@ -155,13 +155,14 @@ export function quoteFromRow(row) {
     quoteNumber: row.quote_number || '',
     markupPercent: row.markup_percent == null ? 30 : Number(row.markup_percent),
     currency: row.currency || 'NGN', notes: row.notes || '', createdAt: row.created_at || '',
+    sourceRfqId: row.source_rfq_id || '',
   };
 }
 export function quoteToRow(q) {
   return {
     template_id: q.templateId || null, company_id: q.companyId || null, kind: q.kind || 'Quote',
     quote_number: q.quoteNumber || null, markup_percent: q.markupPercent ?? 30,
-    currency: q.currency || 'NGN', notes: q.notes || null,
+    currency: q.currency || 'NGN', notes: q.notes || null, source_rfq_id: q.sourceRfqId || null,
   };
 }
 export function quoteLineItemFromRow(row) {
@@ -176,6 +177,37 @@ export function quoteLineItemToRow(li) {
     quote_id: li.quoteId, item_type: li.itemType, item_id: li.itemId || null, description: li.description,
     qty: li.qty ?? 1, unit_cost: li.unitCost ?? 0, markup_multiplier: li.markupMultiplier ?? 1.3,
     position: li.position ?? 0,
+  };
+}
+
+// RFQ Manager (V2 HT-E).
+export function rfqFromRow(row) {
+  return {
+    id: row.id, title: row.title, reference: row.reference || '', companyId: row.company_id || '',
+    status: row.status, assignedTo: row.assigned_to || '', parentRfqId: row.parent_rfq_id || '',
+    notes: row.notes || '', createdAt: row.created_at || '',
+  };
+}
+export function rfqToRow(r) {
+  return {
+    title: r.title, reference: r.reference || null, company_id: r.companyId || null,
+    parent_rfq_id: r.parentRfqId || null, notes: r.notes || null,
+  };
+}
+export function rfqItemFromRow(row) {
+  return {
+    id: row.id, rfqId: row.rfq_id, itemType: row.item_type, itemId: row.item_id || '',
+    description: row.description, vendorName: row.vendor_name || '', vendorVerified: !!row.vendor_verified,
+    qty: Number(row.qty), unitCost: Number(row.unit_cost), markupMultiplier: Number(row.markup_multiplier),
+    position: row.position || 0, notes: row.notes || '',
+  };
+}
+export function rfqItemToRow(li) {
+  return {
+    rfq_id: li.rfqId, item_type: li.itemType, item_id: li.itemId || null, description: li.description,
+    vendor_name: li.vendorName || null, vendor_verified: !!li.vendorVerified,
+    qty: li.qty ?? 1, unit_cost: li.unitCost ?? 0, markup_multiplier: li.markupMultiplier ?? 1.3,
+    position: li.position ?? 0, notes: li.notes || null,
   };
 }
 export function newsToRow(n) {

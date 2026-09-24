@@ -21,6 +21,7 @@ const ALL_TABLES = [
   'connectors', 'activity_log', 'app_settings',
   'product_categories', 'service_categories', 'services', 'company_services',
   'store_item_shares', 'quote_templates', 'quotes', 'quote_line_items',
+  'rfqs', 'rfq_items',
 ];
 
 let pass = 0, fail = 0;
@@ -78,7 +79,8 @@ const memberB = await makeMember('Member B');
 const FLAT = ['companies', 'company_flags', 'contacts', 'products', 'company_products',
   'competitors', 'competitor_campaigns', 'tasks', 'research_clips', 'events',
   'event_attendees', 'news_items', 'connectors', 'app_settings', 'invites',
-  'services', 'company_services', 'quote_templates', 'quotes', 'quote_line_items'];
+  'services', 'company_services', 'quote_templates', 'quotes', 'quote_line_items',
+  'rfqs', 'rfq_items'];
 {
   let readOk = 0;
   for (const t of FLAT) {
@@ -233,6 +235,39 @@ const FLAT = ['companies', 'company_flags', 'contacts', 'products', 'company_pro
   const promoteOther = await memberA.client.from('profiles').update({ role: 'admin' }).eq('id', memberB.uid).select();
   ok((promoteOther.data?.length ?? 0) === 1, "admin can change another member's role");
   await svc.from('profiles').update({ role: 'member' }).eq('id', memberB.uid); // reset
+}
+
+// --- rfqs (V2 HT-E): flat read/insert/items, admin-only status/assigned_to -
+// (memberA is admin from the roles block just above; memberB was reset back
+// to plain member.)
+{
+  const rfqId = 'rls-rfq-' + Date.now();
+  const insDraft = await memberB.client.from('rfqs').insert({ id: rfqId, title: 'RLS test RFQ' });
+  ok(!insDraft.error, 'member can create a draft RFQ (status defaults to draft)');
+
+  const sneakyPublish = await memberB.client.from('rfqs')
+    .insert({ id: 'rls-rfq-sneaky-' + Date.now(), title: 'sneaky', status: 'published' });
+  ok(!!sneakyPublish.error, 'member CANNOT insert an RFQ with a non-draft status');
+
+  const memberEditsTitle = await memberB.client.from('rfqs').update({ title: 'RLS test RFQ (edited)' }).eq('id', rfqId);
+  ok(!memberEditsTitle.error, "member can edit an RFQ's ordinary fields (title)");
+
+  const memberPublishes = await memberB.client.from('rfqs').update({ status: 'published' }).eq('id', rfqId);
+  ok(!!memberPublishes.error, "member CANNOT change an RFQ's status (admin-lock trigger)");
+  const memberAssigns = await memberB.client.from('rfqs').update({ assigned_to: memberB.uid }).eq('id', rfqId);
+  ok(!!memberAssigns.error, 'member CANNOT set assigned_to (admin-lock trigger)');
+
+  const adminPublishes = await memberA.client.from('rfqs').update({ status: 'published', assigned_to: memberB.uid }).eq('id', rfqId).select();
+  ok((adminPublishes.data?.length ?? 0) === 1, 'admin CAN publish and assign an RFQ');
+
+  const itemId = crypto.randomUUID();
+  const insItem = await memberB.client.from('rfq_items').insert({ id: itemId, rfq_id: rfqId, item_type: 'product', item_id: 'drone', description: 'Test item', vendor_name: 'Acme', vendor_verified: true });
+  ok(!insItem.error, 'member can add an rfq_item (research a vendor)');
+
+  const delRfq = await memberA.client.from('rfqs').delete().eq('id', rfqId);
+  ok(!delRfq.error, 'admin can delete an RFQ');
+  const itemGone = (await svc.from('rfq_items').select('id').eq('id', itemId).maybeSingle()).data;
+  ok(itemGone === null, 'deleting an RFQ cascades its items');
 }
 
 // --- company_stage_changes: select only, no client writes ----------------

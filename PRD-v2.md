@@ -232,7 +232,7 @@ code. Modeled the Products/Services toggle on the Companies board/table
   total, not the literal `{{total}}` → export triggers a download), plus
   `db:check`/`test:rls` against the live local database — see TASKS-v2.md.
 
-## 5. Phase 4 — RFQ Manager tab (queued)
+## 5. Phase 4 — RFQ Manager tab (HT-E, shipped)
 
 - `rfqs` (status: draft → published → in_progress → bidding → won/lost;
   `assigned_to` a profile id, **admin-settable only** — the first real use of
@@ -240,11 +240,38 @@ code. Modeled the Products/Services toggle on the Companies board/table
   start from base"). `rfq_items` (vendor_name, `vendor_verified` boolean —
   shown as an in-app badge, **deliberately excluded from the exported quote**).
   RFQ Gallery (list + Branch + Continue).
+- **Enforcement, not just UI hiding**: `status`/`assigned_to` are locked by a
+  `lock_rfq_admin_fields()` trigger — the exact same pattern as HT-A's
+  `role` column-lock — covering both INSERT (a member can't sidestep the
+  lock by creating a row with `status='published'` directly) and UPDATE.
+  The drawer additionally hides the status/assignee controls from non-admins
+  client-side, but that's UX only; the trigger is what a real-browser and
+  RLS test both confirmed is the actual gate.
 - An RFQ-quote/commercial is a `quotes` row with `source_rfq_id` set — reuses
   Phase 3's export engine rather than duplicating it. Downloadable regardless
   of how many items have been added (an RFQ with zero items just exports an
-  empty line-items table).
+  empty line-items table). Exporting copies each `rfq_item` into a
+  `quote_line_item`, **dropping `vendor_name`/`vendor_verified` in the
+  copy** — confirmed by a real-browser pass that the vendor name genuinely
+  never appears in the rendered export, not just "not displayed by
+  convention."
 - Publish / assign / status-change gated by `is_admin()`.
+- `searchCatalogItems()` (product+service search) was extracted out of the
+  quote drawer into a shared helper — this is its 3rd use (Store bulk
+  actions used the underlying filter inline, the quote drawer had its own
+  copy, RFQ items would have been a 3rd copy).
+- **Bug found and fixed via the real-browser pass, not caught by RLS/schema
+  testing**: `loadCreateData()`/`loadRfqData()`'s async-load completion
+  handler called `renderView()` instead of `renderApp()` when already on the
+  relevant tab — but the "New quote"/"Upload template"/"New RFQ" buttons
+  they gate live in the outer header (`renderApp()`'s template), not in the
+  tab's own content. The buttons silently never appeared. HT-D's own smoke
+  test didn't catch this because clicking its Templates/Quotes sub-tab
+  toggle happens to trigger a full `renderApp()` anyway, masking it; RFQ
+  Manager has no sub-tab toggle, so it surfaced immediately. This is exactly
+  the class of bug DB-level verification (db:check/rls-test) structurally
+  cannot catch — another point for keeping the real-browser pass mandatory,
+  not optional, per phase.
 
 ## 6. Phase 5 — Personal vs. general Tasks & Companies (queued, highest-risk)
 

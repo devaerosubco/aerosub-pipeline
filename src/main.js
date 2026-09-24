@@ -22,6 +22,7 @@ import * as servicesApi from './api/services.js';
 import * as storeSharesApi from './api/storeShares.js';
 import * as quoteTemplatesApi from './api/quoteTemplates.js';
 import * as quotesApi from './api/quotes.js';
+import * as rfqsApi from './api/rfqs.js';
 import { detectTokens, buildQuoteFieldValues, renderTemplate, buildQuoteMarkdown, computeLineTotals, QUOTE_FIELDS } from './quoteFields.js';
 import { uploadFile, signedUrl, removeFile, downloadText } from './storage.js';
 import { csvToObjects } from './csv.js';
@@ -52,6 +53,7 @@ const ICONS = {
   clip:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><path d="M7 5.5V4.2a2 2 0 0 1 4 0v6.6a3.5 3.5 0 1 1-7 0V6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><rect x="6.5" y="4.5" width="4" height="7" rx="1.2" stroke="currentColor" stroke-width="1.2"/></svg>',
   doc:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><path d="M5.5 2.5h6l3 3v12h-9z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M11.5 2.5v3h3" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M7.3 10h5.4M7.3 12.4h5.4M7.3 14.8h3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
   docPlus:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><path d="M5.5 2.5h6l3 3v12h-9z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M11.5 2.5v3h3" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 11.5h4M10 9.5v4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+  outbox:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><path d="M3 11.5V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-4.5" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M10 2.5v9M6.3 8.2L10 11.5l3.7-3.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 11.5h4l1.3 2h3.4l1.3-2h4" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
   scroll:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><rect x="2" y="6" width="16" height="8" rx="2" stroke="currentColor" stroke-width="1.3"/><path d="M6 10h.01M9.5 10h.01M13 10h5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
   building2:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><rect x="2.5" y="7" width="6" height="10" stroke="currentColor" stroke-width="1.3"/><rect x="11.5" y="3" width="6" height="14" stroke="currentColor" stroke-width="1.3"/><path d="M14 6.3h1M14 9h1M14 11.7h1" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
   calendar:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><rect x="2.5" y="4" width="15" height="13.5" rx="1.8" stroke="currentColor" stroke-width="1.3"/><path d="M2.5 8h15M6.3 2.3v3M13.7 2.3v3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M6 11h2M9.5 11h2M13 11h1M6 14h2M9.5 14h2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
@@ -663,6 +665,7 @@ const ui = {
   storeVisibleCount:50,    // pagination — "5 columns by 10 rows" (V2 HT-C)
   createTab:'quotes',      // 'quotes' | 'templates' — Create tab sub-nav (V2 HT-D)
   drawerQuoteId:null,
+  drawerRfqId:null,        // V2 HT-E
   drawerKind:null,        // 'company' | 'product' | 'service' | 'competitor' | 'event' | null
   drawerCompanyId:null,
   drawerProductId:null,
@@ -712,7 +715,11 @@ function loadCreateData(){
   Promise.all([quoteTemplatesApi.listAll(), quotesApi.listAll()])
     .then(([templates, quotes])=>{ CREATE_DATA.templates = templates; CREATE_DATA.quotes = quotes; CREATE_DATA.loaded = true; })
     .catch(()=>{ toast('Could not load templates/quotes'); })
-    .finally(()=>{ CREATE_DATA.loading = false; if (ui.view==='create') renderView(); else renderApp(); });
+    // Always renderApp(), not just renderView(): the "Upload template"/"New
+    // quote" header buttons are gated on CREATE_DATA.loaded but live in
+    // renderApp()'s own template, not renderCreate()'s — a renderView()-only
+    // refresh would leave them permanently hidden on the Create view.
+    .finally(()=>{ CREATE_DATA.loading = false; renderApp(); });
 }
 function reloadCreateData(){ CREATE_DATA.loaded = false; loadCreateData(); }
 
@@ -730,6 +737,34 @@ function loadQuoteEditor(quote){
     QUOTE_EDITOR.quoteId = quote.id; QUOTE_EDITOR.lineItems = lineItems; QUOTE_EDITOR.templateText = templateText; QUOTE_EDITOR.loaded = true;
   }).catch(()=>{})
     .finally(()=>{ QUOTE_EDITOR.loading = false; if (ui.drawerQuoteId===quote.id) renderQuoteDrawer(); });
+}
+
+// RFQ Manager (V2 HT-E) — same lazy-load pattern as CREATE_DATA/QUOTE_EDITOR.
+const RFQ_DATA = { rfqs: [], teammates: [], loaded: false, loading: false };
+function loadRfqData(){
+  if (RFQ_DATA.loading) return;
+  RFQ_DATA.loading = true;
+  // Also loads CREATE_DATA (templates/quotes) if it hasn't been already —
+  // the RFQ drawer's "export as quote" / "linked quote" needs it, and
+  // without this it'd be empty until the user happened to visit Create
+  // first (a false "upload a template first" if templates actually exist).
+  if (!CREATE_DATA.loaded) loadCreateData();
+  Promise.all([rfqsApi.listAll(), listProfiles()])
+    .then(([rfqs, teammates])=>{ RFQ_DATA.rfqs = rfqs; RFQ_DATA.teammates = teammates; RFQ_DATA.loaded = true; })
+    .catch(()=>{ toast('Could not load RFQs'); })
+    // Same reason as loadCreateData(): the "New RFQ" header button is gated
+    // on RFQ_DATA.loaded and lives in renderApp()'s template, not
+    // renderRfqs()'s — a renderView()-only refresh never shows it.
+    .finally(()=>{ RFQ_DATA.loading = false; renderApp(); });
+}
+const RFQ_EDITOR = { rfqId: null, items: [], loaded: false, loading: false };
+function loadRfqEditor(rfqId){
+  if (RFQ_EDITOR.loading) return;
+  RFQ_EDITOR.loading = true;
+  rfqsApi.listItems(rfqId)
+    .then(items=>{ RFQ_EDITOR.rfqId = rfqId; RFQ_EDITOR.items = items; RFQ_EDITOR.loaded = true; })
+    .catch(()=>{})
+    .finally(()=>{ RFQ_EDITOR.loading = false; if (ui.drawerRfqId===rfqId) renderRfqDrawer(); });
 }
 
 // The per-item Share section shown in the product/service drawers.
@@ -873,6 +908,7 @@ function navCounts(){
     research: DATA.research.length,
     events: DATA.events.length,
     quotes: CREATE_DATA.loaded ? CREATE_DATA.quotes.length : undefined,
+    rfqs: RFQ_DATA.loaded ? RFQ_DATA.rfqs.length : undefined,
   };
 }
 
@@ -888,6 +924,7 @@ function renderApp(){
     {id:'tasks', label:'Plan', icon:ICONS.task, count:n.tasks},
     {id:'solutions', label:'Store', icon:ICONS.bolt, count:n.products},
     {id:'create', label:'Create', icon:ICONS.docPlus, count:n.quotes},
+    {id:'rfqs', label:'RFQ Manager', icon:ICONS.outbox, count:n.rfqs},
     {id:'reports', label:'Reports', icon:ICONS.doc},
     {id:'settings', label:'Settings', icon:ICONS.shield},
   ];
@@ -938,6 +975,7 @@ function renderApp(){
         ${ui.view==='create' && CREATE_DATA.loaded ? (ui.createTab==='templates'
           ? `<button class="btn btn-primary" id="uploadTemplateBtn">${ICONS.upload} Upload template</button>`
           : `<button class="btn btn-primary" id="addQuoteBtn">${ICONS.plus} New quote</button>`) : ''}
+        ${ui.view==='rfqs' && RFQ_DATA.loaded ? `<button class="btn btn-primary" id="addRfqBtn">${ICONS.plus} New RFQ</button>`:''}
       </div>
       <div class="view" id="viewMount"></div>
     </div>
@@ -947,10 +985,10 @@ function renderApp(){
 }
 
 function viewTitle(){
-  return ({dashboard:'Overview', companies:'Companies', contacts:'Contacts', tasks:'Plan', solutions:'Store', create:'Create', competitors:'Competition Dashboard', research:'Research', reports:'Report Builder', events:'Events', settings:'Settings'})[ui.view];
+  return ({dashboard:'Overview', companies:'Companies', contacts:'Contacts', tasks:'Plan', solutions:'Store', create:'Create', rfqs:'RFQ Manager', competitors:'Competition Dashboard', research:'Research', reports:'Report Builder', events:'Events', settings:'Settings'})[ui.view];
 }
 function viewCrumb(){
-  return ({dashboard:'Pipeline / Overview', companies:'Pipeline / Accounts', contacts:'Pipeline / People', tasks:'Pipeline / Actions', solutions:'Pipeline / Catalog', create:'Pipeline / Quotes', competitors:'Pipeline / Market Watch', research:'Pipeline / Clips', reports:'Pipeline / Export', events:'Pipeline / Events', settings:'Pipeline / Admin'})[ui.view];
+  return ({dashboard:'Pipeline / Overview', companies:'Pipeline / Accounts', contacts:'Pipeline / People', tasks:'Pipeline / Actions', solutions:'Pipeline / Catalog', create:'Pipeline / Quotes', rfqs:'Pipeline / RFQs', competitors:'Pipeline / Market Watch', research:'Pipeline / Clips', reports:'Pipeline / Export', events:'Pipeline / Events', settings:'Pipeline / Admin'})[ui.view];
 }
 
 function bindShell(){
@@ -1041,6 +1079,7 @@ function renderView(){
   else if (ui.view==='tasks') mount.innerHTML = renderTasks();
   else if (ui.view==='solutions') mount.innerHTML = renderSolutions();
   else if (ui.view==='create') mount.innerHTML = renderCreate();
+  else if (ui.view==='rfqs') mount.innerHTML = renderRfqs();
   else if (ui.view==='competitors') mount.innerHTML = renderCompetitors();
   else if (ui.view==='research') mount.innerHTML = renderResearch();
   else if (ui.view==='reports') mount.innerHTML = renderReports();
@@ -1483,6 +1522,16 @@ function openQuoteDrawer(id){
   QUOTE_EDITOR.loaded = false;
   renderQuoteDrawer();
 }
+function openRfqDrawer(id){
+  ui.drawerKind = 'rfq';
+  ui.drawerRfqId = id;
+  ui.drawerCompanyId = null; ui.drawerProductId = null; ui.drawerServiceId = null; ui.drawerCompetitorId = null; ui.drawerQuoteId = null;
+  document.getElementById('scrim').classList.add('open');
+  document.getElementById('drawer').classList.add('open');
+  document.getElementById('scrim').onclick = closeDrawer;
+  RFQ_EDITOR.loaded = false;
+  renderRfqDrawer();
+}
 function closeDrawer(){
   document.getElementById('scrim').classList.remove('open');
   document.getElementById('drawer').classList.remove('open');
@@ -1493,6 +1542,7 @@ function closeDrawer(){
   ui.drawerCompetitorId = null;
   ui.drawerEventId = null;
   ui.drawerQuoteId = null;
+  ui.drawerRfqId = null;
 }
 function renderDrawer(){
   const c = companyById(ui.drawerCompanyId);
@@ -3881,6 +3931,7 @@ async function enterApp(){
   SETTINGS.loaded = false;
   STORE_SHARES.loaded = false; ITEM_SHARE.key = null;
   CREATE_DATA.loaded = false; QUOTE_EDITOR.loaded = false; QUOTE_EDITOR.quoteId = null;
+  RFQ_DATA.loaded = false; RFQ_EDITOR.loaded = false; RFQ_EDITOR.rfqId = null;
   const u = new URL(location.href);
   const storeParam = u.searchParams.get('store');   // V2 HT-C share deep link
   if (location.search.indexOf('invite=') !== -1 || location.search.indexOf('email=') !== -1 || storeParam){
@@ -4113,6 +4164,16 @@ function storeKindCategories(kind){ return kind==='service' ? DATA.settings.serv
 function storeKindTagged(kind, id){ return kind==='service' ? taggedCompaniesForService(id) : taggedCompaniesFor(id); }
 function storeKindOpen(kind, id){ return kind==='service' ? openServiceDrawer(id) : openProductDrawer(id); }
 function storeItemById(kind, id){ return kind==='service' ? serviceById(id) : solutionById(id); }
+
+// Shared by the quote drawer (HT-D) and the RFQ drawer (HT-E) — both need
+// "search products & services, add one as a line item".
+function searchCatalogItems(qStr){
+  const q = qStr.trim().toLowerCase();
+  if (!q) return [];
+  const productMatches = DATA.solutions.filter(s=>!s.archivedAt && s.name.toLowerCase().includes(q)).slice(0,5).map(s=>({...s, kind:'product'}));
+  const serviceMatches = DATA.services.filter(s=>!s.archivedAt && s.name.toLowerCase().includes(q)).slice(0,5).map(s=>({...s, kind:'service'}));
+  return [...productMatches, ...serviceMatches];
+}
 
 function filteredStoreItems(kind){
   const q = ui.search.trim().toLowerCase();
@@ -4743,12 +4804,9 @@ function bindQuoteDrawer(q, tpl){
 
   const liSearch = document.getElementById('liSearch');
   if (liSearch) liSearch.addEventListener('input', ()=>{
-    const qStr = liSearch.value.trim().toLowerCase();
     const results = document.getElementById('liResults');
-    if (!qStr){ results.innerHTML=''; return; }
-    const productMatches = DATA.solutions.filter(s=>!s.archivedAt && s.name.toLowerCase().includes(qStr)).slice(0,5).map(s=>({...s, kind:'product'}));
-    const serviceMatches = DATA.services.filter(s=>!s.archivedAt && s.name.toLowerCase().includes(qStr)).slice(0,5).map(s=>({...s, kind:'service'}));
-    const matches = [...productMatches, ...serviceMatches];
+    const matches = searchCatalogItems(liSearch.value);
+    if (!liSearch.value.trim()){ results.innerHTML=''; return; }
     results.innerHTML = matches.length===0 ? `<div class="sub" style="padding:6px;">No matches.</div>` :
       matches.map(m=>`<div class="bullet solution" data-add-li="${m.kind}:${m.id}" style="cursor:pointer;">
         <span style="flex:1;">${esc(m.name)} <span class="sub">(${m.kind})</span></span>
@@ -4802,6 +4860,319 @@ function bindCreateControls(){
 }
 
 /* ============================================================
+   RFQ MANAGER (V2 HT-E) — item 4: publish/assign gated to admin, research
+   vendors + add catalog items, Branch, Gallery, export reuses the Create
+   tab's quote engine (vendor fields never leave this tab).
+   ============================================================ */
+const RFQ_STATUSES = ['draft','published','in_progress','bidding','won','lost'];
+function rfqStatusLabel(s){ return ({draft:'Draft', published:'Published', in_progress:'In Progress', bidding:'Bidding', won:'Won', lost:'Lost'})[s] || s; }
+function rfqStatusChipClass(s){
+  return s==='won' ? 'chip-good' : s==='lost' ? 'chip-high' : s==='bidding' ? 'chip-gold' : (s==='published'||s==='in_progress') ? 'chip-medium' : 'chip-low';
+}
+function rfqById(id){ return RFQ_DATA.rfqs.find(r=>r.id===id); }
+function teammateName(id){ const t = RFQ_DATA.teammates.find(x=>x.id===id); return t ? (t.full_name||t.email) : ''; }
+
+function renderRfqs(){
+  if (!RFQ_DATA.loaded) return `<div class="empty" style="padding:14px;">${ICONS.empty}<div>Loading…</div></div>`;
+  const list = RFQ_DATA.rfqs;
+  if (!list.length) return `<div class="empty">${ICONS.empty}<div>No RFQs yet — click "New RFQ" to add one.</div></div>`;
+  return `
+  <div class="card tablewrap">
+    <table>
+      <thead><tr><th>Title</th><th>Client</th><th>Status</th><th>Assigned to</th><th>Created</th></tr></thead>
+      <tbody>
+        ${list.map(r=>{
+          const co = companyById(r.companyId);
+          return `<tr data-open-rfq="${r.id}" style="cursor:pointer;">
+            <td class="name-cell">${esc(r.title)}${r.parentRfqId?' <span class="sub">(branch)</span>':''}</td>
+            <td>${co?esc(co.name):'<span class="sub">—</span>'}</td>
+            <td><span class="chip ${rfqStatusChipClass(r.status)}">${esc(rfqStatusLabel(r.status))}</span></td>
+            <td>${r.assignedTo?esc(teammateName(r.assignedTo)):'<span class="sub">unassigned</span>'}</td>
+            <td class="sub">${r.createdAt?new Date(r.createdAt).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):''}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function openAddRfqModal(){
+  const companyOptions = DATA.companies.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  openModal(`
+    <h3>New RFQ</h3>
+    <div class="field"><label>Title</label><input id="mTitle" placeholder="e.g. Amni RFQ 7972"></div>
+    <div class="field"><label>Reference (optional)</label><input id="mRef" placeholder="e.g. RFQ 7972"></div>
+    <div class="field"><label>Client (optional)</label><select id="mCo"><option value="">— none yet —</option>${companyOptions}</select></div>
+    <div class="modal-actions">
+      <button class="btn" id="mCancel">Cancel</button>
+      <button class="btn btn-primary" id="mSave">Create RFQ</button>
+    </div>
+  `, body=>{
+    body.querySelector('#mCancel').onclick = closeModal;
+    body.querySelector('#mSave').onclick = async ()=>{
+      const title = body.querySelector('#mTitle').value.trim();
+      if (!title){ toast('Title required'); return; }
+      const save = body.querySelector('#mSave'); save.disabled = true;
+      try{
+        const saved = await rfqsApi.create({ title, reference: body.querySelector('#mRef').value.trim(), companyId: body.querySelector('#mCo').value });
+        RFQ_DATA.rfqs.unshift(saved);
+        closeModal(); renderApp();
+        openRfqDrawer(saved.id);
+      }catch(e){ toast('Could not create — ' + (e.message || 'try again')); save.disabled = false; }
+    };
+  });
+}
+
+function openExportRfqAsQuoteModal(rfq){
+  if (!CREATE_DATA.templates.length){ toast('Upload a quote template first (Create tab)'); return; }
+  const templateOptions = CREATE_DATA.templates.map(t=>`<option value="${t.id}">${esc(t.name)} (${esc(t.kind)})</option>`).join('');
+  openModal(`
+    <h3>Export "${esc(rfq.title)}" as a quote</h3>
+    <div class="field"><label>Template</label><select id="mTemplate">${templateOptions}</select></div>
+    <div class="field"><label>Type</label><select id="mKind"><option>Quote</option><option>Proforma</option><option>Commercial</option></select></div>
+    <div class="field"><label>Quote number (optional)</label><input id="mNumber"></div>
+    <div class="field"><label>Currency</label><select id="mCurrency"><option value="NGN">NGN</option><option value="USD">USD</option></select></div>
+    <div class="field"><label>Default markup %</label><input id="mMarkup" type="number" value="30" min="0" step="1"></div>
+    <div class="modal-actions">
+      <button class="btn" id="mCancel">Cancel</button>
+      <button class="btn btn-primary" id="mSave">Create & open</button>
+    </div>
+  `, body=>{
+    body.querySelector('#mCancel').onclick = closeModal;
+    const tplSel = body.querySelector('#mTemplate');
+    const kindSel = body.querySelector('#mKind');
+    const syncKind = ()=>{ const t = quoteTemplateById(tplSel.value); if (t) kindSel.value = t.kind; };
+    tplSel.addEventListener('change', syncKind);
+    syncKind();
+    body.querySelector('#mSave').onclick = async ()=>{
+      const save = body.querySelector('#mSave'); save.disabled = true;
+      try{
+        const quote = {
+          id: crypto.randomUUID(), templateId: tplSel.value, kind: kindSel.value,
+          companyId: rfq.companyId, quoteNumber: body.querySelector('#mNumber').value.trim(),
+          currency: body.querySelector('#mCurrency').value, markupPercent: Number(body.querySelector('#mMarkup').value) || 30,
+          sourceRfqId: rfq.id,
+        };
+        const savedQuote = await quotesApi.create(quote);
+        CREATE_DATA.quotes.unshift(savedQuote);
+        // Copy items into the quote — vendor_name/vendor_verified deliberately
+        // dropped (item 4: verified-vendor marks are UI-only, never exported).
+        for (const it of RFQ_EDITOR.items){
+          await quotesApi.addLineItem({
+            quoteId: savedQuote.id, itemType: it.itemType, itemId: it.itemId, description: it.description,
+            qty: it.qty, unitCost: it.unitCost, markupMultiplier: it.markupMultiplier, position: it.position,
+          });
+        }
+        QUOTE_EDITOR.loaded = false;
+        closeModal(); closeDrawer();
+        ui.view = 'create'; ui.createTab = 'quotes'; renderApp();
+        openQuoteDrawer(savedQuote.id);
+        toast('Quote created from the RFQ');
+      }catch(e){ toast('Could not export — ' + (e.message || 'try again')); save.disabled = false; }
+    };
+  });
+}
+
+function renderRfqDrawer(){
+  const r = rfqById(ui.drawerRfqId);
+  const drawer = document.getElementById('drawer');
+  if (!r){ drawer.innerHTML=''; return; }
+  const ready = RFQ_EDITOR.loaded && RFQ_EDITOR.rfqId===r.id;
+  const items = ready ? RFQ_EDITOR.items : [];
+  if (!ready) loadRfqEditor(r.id);
+
+  const isAdmin = AUTH.profile?.role==='admin';
+  const linkedQuote = CREATE_DATA.loaded ? CREATE_DATA.quotes.find(q=>q.sourceRfqId===r.id) : null;
+
+  drawer.innerHTML = `
+    <button class="drawer-close" id="drawerCloseBtn">${ICONS.x}</button>
+    <div class="drawer-head">
+      <div class="eyebrow">${r.reference?esc(r.reference):'RFQ'}${r.parentRfqId?' · branched':''}</div>
+      <h2>${esc(r.title)}</h2>
+      <div class="field-row">
+        <span class="chip ${rfqStatusChipClass(r.status)}">${esc(rfqStatusLabel(r.status))}</span>
+        <button class="btn btn-sm btn-ghost" id="deleteRfqBtn" style="color:#f3d9d6;border:1px solid var(--navy-line);">Delete RFQ</button>
+      </div>
+    </div>
+    <div class="drawer-body">
+      <div class="dsec">
+        <div class="dsec-head"><h4>Details</h4></div>
+        <div class="add-inline"><input id="rTitle" value="${esc(r.title)}" placeholder="Title"></div>
+        <div class="add-inline"><input id="rRef" value="${esc(r.reference||'')}" placeholder="Reference"></div>
+        <div class="add-inline"><select id="rCompany"><option value="">— no client yet —</option>${DATA.companies.map(c=>`<option value="${c.id}" ${r.companyId===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>
+        <textarea class="notes-area" id="rNotes" placeholder="Notes…">${esc(r.notes||'')}</textarea>
+        <div class="small-btn-row"><button class="btn btn-sm btn-primary" id="saveRfqDetailsBtn">Save details</button></div>
+      </div>
+
+      <div class="dsec">
+        <div class="dsec-head"><h4>Status &amp; assignment${isAdmin?'':' <span class="sub">(admin only)</span>'}</h4></div>
+        ${isAdmin ? `
+        <div class="add-inline">
+          <select id="rStatus">${RFQ_STATUSES.map(s=>`<option value="${s}" ${r.status===s?'selected':''}>${rfqStatusLabel(s)}</option>`).join('')}</select>
+        </div>
+        <div class="add-inline">
+          <select id="rAssignee"><option value="">— unassigned —</option>${RFQ_DATA.teammates.map(t=>`<option value="${t.id}" ${r.assignedTo===t.id?'selected':''}>${esc(t.full_name||t.email)}</option>`).join('')}</select>
+        </div>` : `
+        <div class="needs-row"><span class="t">Assigned to</span><span class="d">${r.assignedTo?esc(teammateName(r.assignedTo)):'Unassigned'}</span></div>
+        `}
+      </div>
+
+      <div class="dsec">
+        <div class="dsec-head"><h4>Items (${items.length})</h4></div>
+        ${!ready ? `<div class="sub">Loading…</div>` : items.length===0 ? `<div class="empty" style="padding:14px;">${ICONS.empty}<div>No items yet — research a vendor and add a product or service below.</div></div>` :
+          items.map(it=>`
+            <div class="rec-card">
+              <div class="row" style="justify-content:space-between;gap:8px;">
+                <div class="rname">${esc(it.description)}${it.vendorVerified?` <span class="chip chip-good" style="font-size:9px;">Verified vendor</span>`:''}</div>
+                <button class="x" data-del-rfqitem="${it.id}" style="background:none;border:none;color:var(--teal-strong);cursor:pointer;">${ICONS.x}</button>
+              </div>
+              <div class="row" style="gap:10px;margin-top:6px;flex-wrap:wrap;align-items:center;">
+                <label class="sub">Vendor <input value="${esc(it.vendorName||'')}" data-rfqitem-field="vendorName" data-rfqitem-id="${it.id}" style="width:120px;"></label>
+                <label class="sub" style="display:flex;align-items:center;gap:4px;"><input type="checkbox" ${it.vendorVerified?'checked':''} data-rfqitem-field="vendorVerified" data-rfqitem-id="${it.id}"> Verified</label>
+                <label class="sub">Qty <input type="number" min="0.01" step="1" value="${it.qty}" data-rfqitem-field="qty" data-rfqitem-id="${it.id}" style="width:55px;"></label>
+                <label class="sub">Cost <input type="number" min="0" step="0.01" value="${it.unitCost}" data-rfqitem-field="unitCost" data-rfqitem-id="${it.id}" style="width:85px;"></label>
+                <label class="sub">Markup × <input type="number" min="0" step="0.01" value="${it.markupMultiplier}" data-rfqitem-field="markupMultiplier" data-rfqitem-id="${it.id}" style="width:65px;"></label>
+              </div>
+            </div>
+          `).join('')}
+        ${ready ? `<div class="add-inline"><input id="rfqItemSearch" placeholder="Search products & services to add…"></div><div id="rfqItemResults"></div>` : ''}
+      </div>
+
+      <div class="dsec">
+        <div class="dsec-head"><h4>Branch &amp; export</h4></div>
+        <p class="sub" style="margin-bottom:8px;">Branch continues this RFQ's research as a new draft, leaving this one untouched. Export builds (or reopens) a client quote from these items — vendor names and the verified badge stay internal, they're never included in the export.</p>
+        <div class="small-btn-row">
+          <button class="btn btn-sm btn-ghost" id="branchRfqBtn">Branch</button>
+          <button class="btn btn-sm btn-primary" id="exportRfqBtn">${linkedQuote?'Open linked quote':'Export as Quote/Commercial'}</button>
+        </div>
+      </div>
+    </div>
+  `;
+  bindRfqDrawer(r);
+}
+
+function bindRfqDrawer(r){
+  document.getElementById('drawerCloseBtn').addEventListener('click', closeDrawer);
+  document.getElementById('deleteRfqBtn').addEventListener('click', ()=>{
+    openConfirmModal(`Delete "${r.title}"? This can't be undone.`, async ()=>{
+      try{
+        await rfqsApi.remove(r.id);
+        RFQ_DATA.rfqs = RFQ_DATA.rfqs.filter(x=>x.id!==r.id);
+        closeDrawer(); renderApp(); toast('Deleted');
+      }catch(e){ toast('Could not delete — ' + (e.message || 'try again')); }
+    });
+  });
+  document.getElementById('saveRfqDetailsBtn').addEventListener('click', async ()=>{
+    const title = document.getElementById('rTitle').value.trim();
+    if (!title){ toast('Title required'); return; }
+    const reference = document.getElementById('rRef').value.trim();
+    const companyId = document.getElementById('rCompany').value;
+    const notes = document.getElementById('rNotes').value;
+    try{
+      await Promise.all([
+        rfqsApi.setTitle(r.id, title),
+        rfqsApi.setReference(r.id, reference),
+        rfqsApi.setCompany(r.id, companyId),
+        rfqsApi.setNotes(r.id, notes),
+      ]);
+      r.title = title; r.reference = reference; r.companyId = companyId; r.notes = notes;
+      toast('Details saved'); renderApp(); openRfqDrawer(r.id);
+    }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+  });
+
+  const statusSel = document.getElementById('rStatus');
+  if (statusSel) statusSel.addEventListener('change', async e=>{
+    const status = e.target.value;
+    try{ await rfqsApi.setStatus(r.id, status); r.status = status; renderApp(); openRfqDrawer(r.id); }
+    catch(err){ toast('Could not save — ' + (err.message || 'try again')); }
+  });
+  const assigneeSel = document.getElementById('rAssignee');
+  if (assigneeSel) assigneeSel.addEventListener('change', async e=>{
+    const assignedTo = e.target.value;
+    try{ await rfqsApi.setAssignee(r.id, assignedTo); r.assignedTo = assignedTo; renderApp(); openRfqDrawer(r.id); }
+    catch(err){ toast('Could not save — ' + (err.message || 'try again')); }
+  });
+
+  document.querySelectorAll('[data-rfqitem-field]').forEach(inp=>inp.addEventListener('change', async ()=>{
+    const id = inp.dataset.rfqitemId; const field = inp.dataset.rfqitemField;
+    const it = RFQ_EDITOR.items.find(x=>x.id===id);
+    if (!it) return;
+    const value = inp.type==='checkbox' ? inp.checked : (inp.type==='number' ? Number(inp.value) : inp.value);
+    if (inp.type==='number' && (Number.isNaN(value) || value<0 || (field==='qty' && value<=0))){
+      toast('Enter a valid number'); renderRfqDrawer(); return;
+    }
+    try{
+      await rfqsApi.updateItem(id, { [field]: value });
+      it[field] = value;
+      renderRfqDrawer();
+    }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+  }));
+  document.querySelectorAll('[data-del-rfqitem]').forEach(b=>b.addEventListener('click', async ()=>{
+    const id = b.dataset.delRfqitem;
+    try{
+      await rfqsApi.removeItem(id);
+      RFQ_EDITOR.items = RFQ_EDITOR.items.filter(x=>x.id!==id);
+      renderRfqDrawer();
+    }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+  }));
+
+  const rfqItemSearch = document.getElementById('rfqItemSearch');
+  if (rfqItemSearch) rfqItemSearch.addEventListener('input', ()=>{
+    const results = document.getElementById('rfqItemResults');
+    const matches = searchCatalogItems(rfqItemSearch.value);
+    if (!rfqItemSearch.value.trim()){ results.innerHTML=''; return; }
+    results.innerHTML = matches.length===0 ? `<div class="sub" style="padding:6px;">No matches.</div>` :
+      matches.map(m=>`<div class="bullet solution" data-add-rfqitem="${m.kind}:${m.id}" style="cursor:pointer;">
+        <span style="flex:1;">${esc(m.name)} <span class="sub">(${m.kind})</span></span>
+        <span class="sub">${m.priceAmount!=null?esc(m.priceCurrency+' '+m.priceAmount.toLocaleString()):'no price set'}</span>
+      </div>`).join('');
+    document.querySelectorAll('[data-add-rfqitem]').forEach(el=>el.addEventListener('click', async ()=>{
+      const [kind, itemId] = el.dataset.addRfqitem.split(':');
+      const item = kind==='service' ? serviceById(itemId) : solutionById(itemId);
+      if (!item) return;
+      try{
+        const saved = await rfqsApi.addItem({
+          rfqId: r.id, itemType: kind, itemId: item.id, description: item.name,
+          qty: 1, unitCost: item.priceAmount || 0, markupMultiplier: 1.3, position: RFQ_EDITOR.items.length,
+        });
+        RFQ_EDITOR.items.push(saved);
+        rfqItemSearch.value = ''; results.innerHTML = '';
+        renderRfqDrawer();
+        toast('Added');
+      }catch(e){ toast('Could not add — ' + (e.message || 'try again')); }
+    }));
+  });
+
+  document.getElementById('branchRfqBtn').addEventListener('click', async ()=>{
+    try{
+      const cloned = await rfqsApi.branch(r, RFQ_EDITOR.items);
+      RFQ_DATA.rfqs.unshift(cloned);
+      closeDrawer(); renderApp();
+      openRfqDrawer(cloned.id);
+      toast('Branched');
+    }catch(e){ toast('Could not branch — ' + (e.message || 'try again')); }
+  });
+
+  document.getElementById('exportRfqBtn').addEventListener('click', ()=>{
+    const existing = CREATE_DATA.loaded ? CREATE_DATA.quotes.find(q=>q.sourceRfqId===r.id) : null;
+    if (existing){
+      closeDrawer();
+      ui.view = 'create'; ui.createTab = 'quotes'; renderApp();
+      openQuoteDrawer(existing.id);
+      return;
+    }
+    openExportRfqAsQuoteModal(r);
+  });
+}
+
+function bindRfqsControls(){
+  if (!RFQ_DATA.loaded) loadRfqData();
+  document.querySelectorAll('[data-open-rfq]').forEach(el=>el.addEventListener('click', ()=>openRfqDrawer(el.dataset.openRfq)));
+  const addRfqBtn = document.getElementById('addRfqBtn');
+  if (addRfqBtn) addRfqBtn.addEventListener('click', openAddRfqModal);
+}
+
+/* ============================================================
    VIEW BINDING DISPATCH
    ============================================================ */
 function bindView(){
@@ -4810,6 +5181,7 @@ function bindView(){
   if (ui.view==='tasks') bindTasksControls();
   if (ui.view==='solutions') bindSolutionsControls();
   if (ui.view==='create') bindCreateControls();
+  if (ui.view==='rfqs') bindRfqsControls();
   if (ui.view==='competitors') bindCompetitorsControls();
   if (ui.view==='research') bindResearchControls();
   if (ui.view==='reports') bindReportsControls();

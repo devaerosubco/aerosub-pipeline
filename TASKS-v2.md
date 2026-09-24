@@ -12,7 +12,7 @@ Companion doc: [PRD-v2.md](PRD-v2.md). Refs like "PRD-v2 §5" point into it. Thi
 | HT-B — Store: catalog + bulk/single upload | ✅ 2026-09-17, verified 2026-09-18 — same db:check/test:rls run above covers it |
 | HT-C — Store: dashboard, card/list, bulk actions, sharing | ✅ 2026-09-17, verified 2026-09-18 — same run |
 | HT-D — Create: Quotes/Proforma/Commercials + templates | ✅ 2026-09-21 (`.html` only — `.docx` deliberately not attempted, see PRD-v2 §4) |
-| HT-E — RFQ Manager | pending |
+| HT-E — RFQ Manager | ✅ 2026-09-24, verified live (db:check 28 tables/106 policies, test:rls 89/89, Playwright 11/11) |
 | HT-F — Personal vs. general Tasks & Companies | pending |
 | HT-G — Analytics tab | pending |
 | HT-H — Alerts + RSS feed connector | pending |
@@ -302,21 +302,76 @@ not a gap).
 
 ## HT-E. RFQ Manager
 
-**Acceptance criteria:** PRD-v2 §5. `rfqs`/`rfq_items`. Publish/assign/status
-gated by `is_admin()`. Branch clones an RFQ's items into a new row. Export
-reuses HT-D's engine and excludes `vendor_verified` from the output.
+**Acceptance criteria:** PRD-v2 §5 (updated — read it). `rfqs`/`rfq_items`.
+Publish/assign/status gated by `is_admin()`, enforced in the DB (a trigger),
+not just hidden client-side. Branch clones an RFQ's items into a new draft.
+Export reuses HT-D's quote engine and excludes `vendor_verified`/
+`vendor_name` from the output.
 
-- [ ] `rfqs` (status enum, `assigned_to`, `parent_rfq_id`), `rfq_items`
-  (vendor_name, `vendor_verified`).
-- [ ] RFQ Gallery view (list, status chips, Branch, Continue).
-- [ ] Publish/assign/status-change UI, `is_admin()`-gated both client-side (UX)
-  and server-side (RLS — the real gate).
-- [ ] Export path: an RFQ-quote is a `quotes` row with `source_rfq_id` set,
-  reusing HT-D's template engine; confirm `vendor_verified` never reaches the
-  exported file.
-- [ ] Tests: RLS for publish/assign/status (member denied, admin allowed);
-  a real-browser pass covering research → add items → branch → publish →
-  assign → export.
+- [x] `20260924120001_rfqs.sql` — `rfqs` (status enum, `assigned_to`,
+  `parent_rfq_id`, `company_id`, `reference`), `rfq_items` (vendor_name,
+  vendor_verified, same qty/cost/markup shape as `quote_line_items`). Flat
+  member RLS on both — **except** a `lock_rfq_admin_fields()` trigger
+  (mirrors HT-A's `role` column-lock exactly) that rejects any INSERT with a
+  non-draft `status`/non-null `assigned_to`, and any UPDATE changing either,
+  unless the actor is admin. `quotes` gains `source_rfq_id` (nullable FK
+  back to `rfqs`) — the RFQ→quote link PRD-v2 always called for.
+- [x] `src/api/rfqs.js` (granular setters, matching `api/companies.js`;
+  `branch()` clones title/reference/company/notes/items into a fresh draft,
+  `parent_rfq_id` pointing at the source) + `store.js` row⇄app-shape pairs.
+  `RFQ_DATA`/`RFQ_EDITOR` lazy caches in `main.js`. Extracted
+  `searchCatalogItems()` out of the quote drawer (this is now its 3rd use —
+  Store bulk actions, quote line items, RFQ items — duplicating it a 3rd
+  time would've been a real DRY violation).
+- [x] New `RFQ Manager` nav tab: Gallery (table — title/client/status chip/
+  assignee/created), RFQ drawer (details anyone can edit; a "Status &
+  assignment" section that's editable selects for an admin and a read-only
+  row for everyone else — the client-side hiding is UX only, the trigger is
+  the real gate), items (vendor name/verified checkbox/qty/cost/markup,
+  incremental search-add), Branch, and "Export as Quote/Commercial" (creates
+  a `quotes` row with `source_rfq_id` set + copies items across —
+  **`vendor_name`/`vendor_verified` are dropped in the copy**, exactly per
+  item 4's "this will not be included in the Quote export, just in our UI
+  preview" — or reopens the already-linked quote if one exists).
+- [x] `scripts/db-check.mjs` (28 tables, 106 policies, 2 new seed-count
+  entries) / `scripts/rls-test.mjs` (`rfqs`/`rfq_items` in `ALL_TABLES`/
+  `FLAT`, a dedicated block: member can draft + edit + add items, member
+  CANNOT set a non-draft status at insert time or change status/assigned_to
+  after, admin CAN, cascade-delete) extended.
+- [x] `npx vitest run` — 78/78 (was 74; +4 `store.test.js` RFQ round-trips).
+  `node --check` clean. `npx vite build` clean (483 kB JS / 26 kB CSS).
+  `npm run check:secrets` clean.
+- [x] Applied live via `npx supabase migration up` (not a reset, same reason
+  as HT-D — a demo account was in active use): `db:check` 59/63 (the 4
+  "fails" are the same expected non-reset-DB seed-count noise as every prior
+  phase; table count 28 and policy count 106 — the real checks — both
+  matched exactly). `test:rls` 89/89, including every RFQ-specific
+  assertion (the admin-lock trigger correctly blocks a member's self-publish
+  *and* a sneaky non-draft insert, and correctly lets an admin through both).
+- [x] Real-browser Playwright pass (one-off script, deleted after use):
+  sign in → RFQ Manager → new RFQ against a real seeded company → search-add
+  a real product → set vendor name + verified checkbox → **admin publishes
+  the RFQ, status chip updates** → Branch (new draft, `(branch)` in the
+  title, item carried over) → export the branch as a quote (reusing an
+  uploaded template) → **preview shows the client name and total, and
+  confirms "Acme ROV Ltd" (the vendor name) does NOT appear anywhere in the
+  export** → zero console/page errors. 11/11 after two real bugs found and
+  fixed in this pass:
+  - ↳ **bug found + fixed**: `loadCreateData()`/`loadRfqData()`'s completion
+    handler only called `renderView()` (not `renderApp()`) when already on
+    that view — but the "Upload template"/"New quote"/"New RFQ" buttons
+    they gate live in `renderApp()`'s own header template, not in
+    `renderCreate()`/`renderRfqs()`'s content. Result: those buttons never
+    appeared after the async load finished, unless something else happened
+    to trigger a full `renderApp()` first (which is exactly what masked
+    this in HT-D's own smoke test — clicking the Templates/Quotes sub-tab
+    toggle incidentally re-renders the whole shell). RFQ Manager has no
+    sub-tab toggle to mask it, so the bug surfaced immediately. Fixed both
+    loaders to call `renderApp()` unconditionally.
+  - ↳ note: the second "failure" (status chip / branch title not updating
+    in time) was the *test script* not waiting for the async save+re-render
+    to finish before asserting — fixed with `page.waitForFunction` instead
+    of a fixed timeout. Not an app bug.
 
 ## HT-F. Personal vs. general Tasks & Companies
 
