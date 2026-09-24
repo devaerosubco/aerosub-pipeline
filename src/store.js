@@ -141,6 +141,43 @@ export function companyToRow(c) {
 export function categoryFromRow(row) {
   return { id: row.id, name: row.name };
 }
+
+// Create tab — Quotes/Proforma/Commercials (V2 HT-D).
+export function quoteTemplateFromRow(row) {
+  return { id: row.id, name: row.name, kind: row.kind, filePath: row.file_path, fieldMap: row.field_map || {}, createdAt: row.created_at || '' };
+}
+export function quoteTemplateToRow(t) {
+  return { name: t.name, kind: t.kind || 'Quote', file_path: t.filePath, field_map: t.fieldMap || {} };
+}
+export function quoteFromRow(row) {
+  return {
+    id: row.id, templateId: row.template_id || '', companyId: row.company_id || '', kind: row.kind,
+    quoteNumber: row.quote_number || '',
+    markupPercent: row.markup_percent == null ? 30 : Number(row.markup_percent),
+    currency: row.currency || 'NGN', notes: row.notes || '', createdAt: row.created_at || '',
+  };
+}
+export function quoteToRow(q) {
+  return {
+    template_id: q.templateId || null, company_id: q.companyId || null, kind: q.kind || 'Quote',
+    quote_number: q.quoteNumber || null, markup_percent: q.markupPercent ?? 30,
+    currency: q.currency || 'NGN', notes: q.notes || null,
+  };
+}
+export function quoteLineItemFromRow(row) {
+  return {
+    id: row.id, quoteId: row.quote_id, itemType: row.item_type, itemId: row.item_id || '',
+    description: row.description, qty: Number(row.qty), unitCost: Number(row.unit_cost),
+    markupMultiplier: Number(row.markup_multiplier), position: row.position || 0,
+  };
+}
+export function quoteLineItemToRow(li) {
+  return {
+    quote_id: li.quoteId, item_type: li.itemType, item_id: li.itemId || null, description: li.description,
+    qty: li.qty ?? 1, unit_cost: li.unitCost ?? 0, markup_multiplier: li.markupMultiplier ?? 1.3,
+    position: li.position ?? 0,
+  };
+}
 export function newsToRow(n) {
   return { title: n.title, source: n.source || null, url: n.url || null, date: n.date, kind: n.kind || null, ref_id: n.refId || null };
 }

@@ -20,7 +20,7 @@ const ALL_TABLES = [
   'tasks', 'research_clips', 'events', 'event_attendees', 'news_items',
   'connectors', 'activity_log', 'app_settings',
   'product_categories', 'service_categories', 'services', 'company_services',
-  'store_item_shares',
+  'store_item_shares', 'quote_templates', 'quotes', 'quote_line_items',
 ];
 
 let pass = 0, fail = 0;
@@ -78,7 +78,7 @@ const memberB = await makeMember('Member B');
 const FLAT = ['companies', 'company_flags', 'contacts', 'products', 'company_products',
   'competitors', 'competitor_campaigns', 'tasks', 'research_clips', 'events',
   'event_attendees', 'news_items', 'connectors', 'app_settings', 'invites',
-  'services', 'company_services'];
+  'services', 'company_services', 'quote_templates', 'quotes', 'quote_line_items'];
 {
   let readOk = 0;
   for (const t of FLAT) {
@@ -140,6 +140,28 @@ const FLAT = ['companies', 'company_flags', 'contacts', 'products', 'company_pro
   ok(gone === null, 'the share is actually gone after revoke');
 
   await memberA.client.from('services').delete().eq('id', sid2);
+}
+
+// --- quotes (V2 HT-D): flat member CRUD, line items cascade -------------
+{
+  const tplId = 'rls-tpl-' + Date.now();
+  const insTpl = await memberA.client.from('quote_templates').insert({ id: tplId, name: 'RLS test template', file_path: 'quote-templates/x/y.html' });
+  ok(!insTpl.error, 'member can insert a quote_template');
+
+  const quoteId = 'rls-quote-' + Date.now();
+  const insQuote = await memberA.client.from('quotes').insert({ id: quoteId, template_id: tplId });
+  ok(!insQuote.error, 'member can insert a quote');
+
+  const liId = crypto.randomUUID();
+  const insLi = await memberA.client.from('quote_line_items').insert({ id: liId, quote_id: quoteId, item_type: 'product', item_id: 'drone', description: 'Test line', unit_cost: 100 });
+  ok(!insLi.error, 'member can insert a quote_line_item');
+
+  const delQuote = await memberA.client.from('quotes').delete().eq('id', quoteId);
+  ok(!delQuote.error, 'member can delete a quote');
+  const liGone = (await svc.from('quote_line_items').select('id').eq('id', liId).maybeSingle()).data;
+  ok(liGone === null, 'deleting a quote cascades its line items');
+
+  await memberA.client.from('quote_templates').delete().eq('id', tplId);
 }
 
 // --- storage (V2 HT-B): store-attachments is member-only, anon denied ----

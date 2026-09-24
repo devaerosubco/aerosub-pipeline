@@ -8,10 +8,10 @@ Companion doc: [PRD-v2.md](PRD-v2.md). Refs like "PRD-v2 §5" point into it. Thi
 
 | Step | State |
 |---|---|
-| HT-A — Foundation (roles, sector, categories) | ✅ 2026-09-17 |
-| HT-B — Store: catalog + bulk/single upload | 🟡 built 2026-09-17, db:check/rls-test/browser pass not yet run (no local Docker this session) |
-| HT-C — Store: dashboard, card/list, bulk actions, sharing | 🟡 built 2026-09-17, same test gap as HT-B |
-| HT-D — Create: Quotes/Proforma/Commercials + templates | pending |
+| HT-A — Foundation (roles, sector, categories) | ✅ 2026-09-17, verified against a live local DB 2026-09-18 (db:check 53/53, test:rls 70/70) |
+| HT-B — Store: catalog + bulk/single upload | ✅ 2026-09-17, verified 2026-09-18 — same db:check/test:rls run above covers it |
+| HT-C — Store: dashboard, card/list, bulk actions, sharing | ✅ 2026-09-17, verified 2026-09-18 — same run |
+| HT-D — Create: Quotes/Proforma/Commercials + templates | ✅ 2026-09-21 (`.html` only — `.docx` deliberately not attempted, see PRD-v2 §4) |
 | HT-E — RFQ Manager | pending |
 | HT-F — Personal vs. general Tasks & Companies | pending |
 | HT-G — Analytics tab | pending |
@@ -74,13 +74,16 @@ Settings (admin-only controls, RLS-enforced regardless of client hiding).
   extended to cover `sector` (present + defaults-to-`''`/`null`).
 - [x] `npx vitest run` — 48/48 pass (was 46; +2 for `categoryFromRow` and the
   company `sector` round-trip). `node --check` clean on every touched file.
-- [ ] `npm run db:reset && npm run db:check && npm run test:rls` — **not yet
-  run**: this session has no local Docker/Supabase running (`docker info`
-  fails). Needs `supabase start` first; do this before merging.
-- [ ] Manual real-browser pass: sign in as the bootstrap admin, add/rename/
-  remove a category, confirm a non-admin sees the categories read-only and the
-  Team role toggle only on admin sessions — **not yet run**, same reason as
-  above (needs `npm run dev` against a running local Supabase).
+- [x] `npm run db:check && npm run test:rls` — run 2026-09-18 against a live
+  local Supabase instance: db:check 53/53, test:rls 70/70 (covers HT-A/B/C
+  together — that session's first real verification of any of this).
+- [x] Sign-in itself is confirmed working in a real browser (the HT-D
+  Playwright pass, 2026-09-21, signs in via `#aEmail`/`#aPass` and reaches
+  the nav as its first step).
+- [ ] Category add/rename/remove and the Team role toggle specifically have
+  **not** been clicked through by anyone yet — the local app was handed to
+  the user running, but that's not the same as a verified pass. Do this
+  before merging.
 
 ---
 
@@ -129,19 +132,33 @@ Supabase Storage.
   `company_services` seed counts, a `store-attachments` bucket + policy-count
   check) / `scripts/rls-test.mjs` (`services`/`company_services` added to
   `ALL_TABLES`/`FLAT`, a dedicated services CRUD block, an anon-vs-member
-  storage upload/read block) extended — **not yet run against a live DB**
-  (see below).
+  storage upload/read block) extended — verified 2026-09-18 against a live
+  local DB, see the status board.
 - [x] `npx vitest run` — 60/60 (was 48; +8 csv.js, +4 Store round-trip tests
   in store.test.js). `node --check` clean on every touched/new file.
   `npx vite build` clean (425 kB JS / 26 kB CSS — up from HT0's 192 kB, no
   heavy new dependency added). `npm run check:secrets` clean.
-- [ ] `npm run db:reset && npm run db:check && npm run test:rls` — **not yet
-  run**, same reason as HT-A: no local Docker/Supabase this session.
+- [x] `npm run db:check && npm run test:rls` — 2026-09-18, 53/53 and 70/70
+  respectively (this run also covers HT-A and HT-C).
+  - ↳ **bug found + fixed 2026-09-21**: a fresh `supabase db reset` failed —
+    `seed.sql`'s `products` insert never got a `category_id` (the column
+    HT-B's own migration made `not null`), because the migration's backfill
+    UPDATE only affects rows that already exist, and on a clean reset
+    `seed.sql` runs *after* migrations, so it was inserting into an empty
+    table. Fixed at the source (`scripts/extract-seed.mjs` now maps each
+    seeded product id to its category, mirroring the migration's own
+    mapping) and regenerated `seed.sql`. This is exactly the kind of bug
+    that only running `db:reset` for real — not just reviewing the SQL —
+    catches; see the standalone fix commit.
 - [ ] Manual real-browser pass: bulk upload (valid + invalid rows, wrong
-  category name), single upload with/without OEM (datasheet field
-  appears/hides correctly), image upload + signed-URL "View", archive/
-  unarchive, tag a service to a company from both the service drawer and the
-  company drawer — **not yet run**, same reason.
+  category name), single upload with/without OEM, image upload +
+  signed-URL "View", archive/unarchive, tag a service to a company —
+  **still not actually clicked through in a browser** by anyone. The
+  2026-09-18/21 sessions verified the DB/RLS layer live (db:check,
+  test:rls) and did a Playwright pass for HT-D specifically, but that
+  script goes straight to the Create tab and never opens the Store view's
+  own UI — don't read the schema verification as UI verification. Do this
+  before merging.
 
 ## HT-C. Store dashboard, card/list toggle, bulk actions, member sharing
 
@@ -196,36 +213,92 @@ pattern. Bulk select + floating action toolbar. Members-only share +
 - [x] `scripts/db-check.mjs` (23 tables, 86 policies, `store_item_shares` seed
   count) / `scripts/rls-test.mjs` (`store_item_shares` in `ALL_TABLES`, a
   dedicated block: share/read/revoke, a member can't insert a share claiming
-  `shared_by` = someone else) extended — **not yet run against a live DB**.
+  `shared_by` = someone else) extended — verified 2026-09-18 against a live
+  local DB, see the status board (also re-verified after the HT-D
+  migration was added on top, 2026-09-21 — both `db:check`/`test:rls` runs
+  green with `store_item_shares` unaffected).
 - [x] `npx vitest run` — still 60/60 (no new pure-logic units this task; the
   new code is render/bind/DOM wiring, covered by real-browser passes per
   this app's existing convention, same as `main.js` always has been).
   `node --check` clean on every touched file. `npx vite build` clean (439 kB
   JS / 26 kB CSS). `npm run check:secrets` clean.
-- [ ] `npm run db:reset && npm run db:check && npm run test:rls` — **not yet
-  run**, same reason as HT-A/HT-B: no local Docker/Supabase this session.
+- [x] `npm run db:check && npm run test:rls` — 2026-09-18 (53/53, 70/70) and
+  re-run 2026-09-21 after HT-D's migration landed (26 tables, 98 policies,
+  78/78) — both green, `store_item_shares` untouched by the newer migration.
 - [ ] Manual real-browser pass: dashboard tiles populate after a search-then-
   open and after "Add to quote"; card/list toggle; bulk archive/unarchive/
   export/delete; share an item with a teammate and confirm it shows in
   their "Shared with me" filter; open a `?store=` link fresh (signed out ->
-  sign in -> lands on the item) — **not yet run**, same reason.
+  sign in -> lands on the item) — **still not clicked through by anyone**.
+  The HT-D Playwright pass exercises the *Store data* indirectly (searching
+  products/services from the quote drawer, incrementing
+  `added_to_quote_count`) but never opens the Store view's own dashboard/
+  card/list/bulk-toolbar/sharing UI. Do this before merging.
 
 ## HT-D. Create: Quotes/Proforma/Commercials + uploaded templates
 
-**Acceptance criteria:** PRD-v2 §4. `quote_templates`/`quotes`/
-`quote_line_items`. `.html` templates work end-to-end (upload, field-map,
-export); `.docx` support at least attempted in the same phase.
+**Acceptance criteria:** PRD-v2 §4 (updated with what actually got built —
+read it). `quote_templates`/`quotes`/`quote_line_items`. `.html` templates
+work end-to-end (upload, field-map, export). `.docx` deliberately not
+attempted this pass (see PRD-v2 §4 for why that's a documented decision,
+not a gap).
 
-- [ ] `quote_templates` (Storage file + field-map JSON), `quotes`,
-  `quote_line_items` (sourced from `products`/`services`, qty × price,
-  default ×1.3 markup, adjustable per line).
-- [ ] `.html` template upload + field mapping + token-replace export (model:
-  `buildReportHtml`, `src/main.js`).
-- [ ] `.docx` template support via `docxtemplater` + `pizzip` (client-side) —
-  attempt within this phase; if it doesn't land cleanly, defer with a written
-  reason and ship `.html`-only.
-- [ ] Tests: vitest for the calc/markup logic; a real-browser pass exporting
-  at least one quote from an uploaded `.html` template with real line items.
+- [x] `20260921120001_quotes.sql` — `quote_templates`, `quotes`,
+  `quote_line_items` (flat member RLS, matching products/services; line
+  items snapshot `description`/`unit_cost` at add-time; cascade-delete from
+  quotes). Reused the existing `store-attachments` bucket (`quote-templates/`
+  prefix) rather than a second bucket.
+- [x] `src/quoteFields.js` (pure, unit-tested — `detectTokens`,
+  `computeLineTotals`, `buildQuoteFieldValues`, `renderTemplate`,
+  `buildQuoteMarkdown`) + `src/api/quoteTemplates.js` / `src/api/quotes.js`
+  (granular setters, matching the `api/companies.js` convention) +
+  `store.js` row⇄app-shape pairs for all three entities.
+  `CREATE_DATA`/`QUOTE_EDITOR` lazy-load caches in `main.js`, mirroring the
+  `SETTINGS`/`ITEM_SHARE` pattern.
+- [x] New `Create` nav tab (`ui.view==='create'`), Quotes/Templates sub-tabs.
+  Upload-template modal detects `{{tokens}}` in the uploaded file and shows
+  one dropdown per token, mapped to a fixed field list (not free-form) —
+  same UI reused (read-only prefilled) in the manage-template modal for
+  re-mapping/rename/delete.
+  - ↳ note: template selection is fixed at quote-creation time — no
+    "change template" control on an existing quote. Deleting/recreating
+    covers the rare case of picking wrong; not worth the extra UI for a v1.
+- [x] Quote drawer: details (client/number/currency/markup%/notes), line
+  items (inline qty/cost/markup edit, remove), an incremental product+service
+  search-and-add (reuses `DATA.solutions`/`DATA.services`, increments
+  `added_to_quote_count` — the same counter HT-C's bulk button also
+  increments; both are legitimate "this got quoted" signals for a vanity
+  dashboard metric, not a precise ledger, so no dedup logic was added), a
+  live sandboxed-iframe preview (same pattern as the Reports view), and
+  `.html`/`.md` export via the existing `downloadFile` helper.
+- [x] `scripts/db-check.mjs` (26 tables, 98 policies, 3 new seed-count
+  entries) / `scripts/rls-test.mjs` (`quote_templates`/`quotes`/
+  `quote_line_items` in `ALL_TABLES`/`FLAT`, a dedicated block proving
+  cascade-delete) extended.
+- [x] `npx vitest run` — 74/74 (was 60; +10 `quoteFields.test.js`, +4
+  `store.test.js` quote round-trips). `node --check` clean. `npx vite
+  build` clean (465 kB JS / 26 kB CSS). `npm run check:secrets` clean.
+- [x] **Applied and verified against the live local database, same
+  session** (`npx supabase migration up`, not a full reset, to avoid
+  wiping the demo account already in use): `db:check` 55/59 → the 4
+  "fails" are seed-count assertions that only hold right after a clean
+  `db reset` and are expected on a DB with a real signed-in user + activity
+  history; table count (26) and policy count (98) — the real structural
+  checks — both passed exactly. `test:rls` 78/78, including the new
+  cascade-delete assertion.
+- [x] Real-browser Playwright pass (one-off script, deleted after use, per
+  this app's convention): sign in → open Create → upload a 7-token
+  template → map every token → save → new quote against a real seeded
+  company (Seplat) → search-add a real product line item → **preview
+  shows the substituted client name and a computed total, not the literal
+  `{{total}}`** → export triggers a real download. Zero console/page
+  errors. 9/9 — caught one bug in the *test script itself* (miscounted
+  tokens: forgot the template's own `{{notes}}` placeholder), not in the
+  app; fixed and re-ran clean. Test template/quote/line-item DB rows and
+  the throwaway RLS-test accounts were cleaned up afterward; three orphaned
+  template files remain in Storage (can't be deleted via raw SQL — Supabase
+  blocks direct `storage.objects` deletes — and aren't referenced or
+  visible anywhere in the app, so left as-is).
 
 ## HT-E. RFQ Manager
 

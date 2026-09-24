@@ -31,3 +31,13 @@ export async function removeFile(path) {
   if (!path) return;
   await supabase.storage.from(BUCKET).remove([path]);
 }
+
+// Reads a stored object's text content (V2 HT-D — parsing/rendering an
+// uploaded .html quote template). Same member-only RLS as everything else
+// in this bucket; no signed URL needed since this goes straight through the
+// authenticated client.
+export async function downloadText(path) {
+  const { data, error } = await supabase.storage.from(BUCKET).download(path);
+  if (error) throw error;
+  return await data.text();
+}

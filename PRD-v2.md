@@ -194,18 +194,43 @@ code. Modeled the Products/Services toggle on the Companies board/table
   **signed-in member** straight on that item (the auth gate still applies —
   a deep link, not the no-login access deferred in §0). No public/token link.
 
-## 4. Phase 3 — CREATE tab: Quotes/Proforma/Commercials, uploaded templates (queued)
+## 4. Phase 3 — CREATE tab: Quotes/Proforma/Commercials, uploaded templates (HT-D, shipped — .html only)
 
-- `quote_templates` (an uploaded `.html` or `.docx` file in Storage + a
-  field-map the uploader defines — `{{items_table}}`, `{{client_name}}`,
-  `{{total}}`, etc.), `quotes`, `quote_line_items` (sourced from
-  `products`/`services`, qty × unit price, a markup defaulting to ×1.3 — the
-  convention already used in the team's manual RFQ workbook — adjustable per
-  line).
-- `.html` templates: token-replace, same pattern as `buildReportHtml`
-  (`src/main.js`). `.docx` templates: `docxtemplater` + `pizzip` (pure-JS,
-  client-side, no server) — heavier; build `.html` support first, `.docx` as a
-  fast-follow within the same phase.
+- `quote_templates` (an uploaded `.html` file in `store-attachments` under a
+  `quote-templates/` prefix — reused the existing HT-B bucket + policies
+  rather than standing up a second one for a different content type — plus
+  a `field_map` jsonb the uploader defines at upload time), `quotes`,
+  `quote_line_items` (sourced from `products`/`services`, qty × unit cost ×
+  a markup multiplier defaulting to ×1.3 — the convention already used in
+  the team's manual RFQ workbook — adjustable per line; `unit_cost`/
+  `description` are **snapshotted at add-time**, not live references, so a
+  quote survives the source catalog item later being edited or deleted).
+- **Field mapping, not fixed tokens**: `src/quoteFields.js` (`detectTokens`)
+  scans an uploaded file for `{{token}}` placeholders; the upload/manage-
+  template modals then show one dropdown per detected token, mapping it to
+  one of a fixed, closed set of fields (`QUOTE_FIELDS` — client name, quote
+  number, date, the auto-generated line-items table, subtotal, total, notes,
+  prepared-by). An unmapped token is left as literal text rather than
+  erroring, so an unfinished mapping still previews as valid HTML.
+- `.html` templates: token-replace (`renderTemplate`), conceptually the same
+  pattern as `buildReportHtml` but data-driven by `field_map` instead of a
+  fixed template string. **`.docx` support was not attempted, not deferred
+  half-way** — per this section's own acceptance criteria ("if it doesn't
+  land cleanly, defer with a written reason"): given the amount already
+  built in this one pass, taking on `docxtemplater`/`pizzip` plus Word's
+  well-known XML run-splitting of `{{tokens}}` across multiple `<w:r>` runs
+  was a real scope-creep risk to ship carelessly. `.html`-only for V1; a
+  clean fast-follow, not a hole in this phase.
+- The Create tab's quote drawer reuses the Reports view's sandboxed
+  `srcdoc` iframe pattern for live preview, and the existing `downloadFile`
+  Blob helper for `.html`/`.md` export (`buildQuoteMarkdown` is a
+  template-independent plain-text fallback, same relationship
+  `buildReportMarkdown` has to `buildReportHtml`).
+- Verified with a real-browser Playwright pass (upload → token-detect → map
+  → save → create a quote against a real seeded company → search-add a
+  line item → preview shows the substituted client name and a *computed*
+  total, not the literal `{{total}}` → export triggers a download), plus
+  `db:check`/`test:rls` against the live local database — see TASKS-v2.md.
 
 ## 5. Phase 4 — RFQ Manager tab (queued)
 

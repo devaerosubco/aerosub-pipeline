@@ -6,6 +6,7 @@ import {
   newsFromRow, newsToRow, researchFromRow, eventFromRow, eventToRow, attendeeFromRow, attendeeToRow,
   connectorFromRow, activityFromRow, categoryFromRow,
   serviceFromRow, serviceToRow, companyServiceFromRow,
+  quoteTemplateFromRow, quoteTemplateToRow, quoteFromRow, quoteToRow, quoteLineItemFromRow, quoteLineItemToRow,
 } from './store.js';
 
 describe('companies', () => {
@@ -283,5 +284,42 @@ describe('categories (V2 Phase 0 — same shape for product_categories and servi
   it('maps a category row', () => {
     const c = categoryFromRow({ id: 'drone-uav-systems', name: 'Drone/UAV Systems', created_at: '2026-01-01', updated_at: '2026-01-01' });
     expect(c).toEqual({ id: 'drone-uav-systems', name: 'Drone/UAV Systems' });
+  });
+});
+
+describe('quotes (V2 HT-D)', () => {
+  it('round-trips a quote template through quoteTemplateToRow -> quoteTemplateFromRow', () => {
+    const app = { name: 'Standard Quote', kind: 'Quote', filePath: 'quote-templates/t1/a.html', fieldMap: { '{{total}}': 'total' } };
+    const row = quoteTemplateToRow(app);
+    expect(row.file_path).toBe(app.filePath);
+    const back = quoteTemplateFromRow({ id: 't1', ...row });
+    expect(back.filePath).toBe(app.filePath);
+    expect(back.fieldMap).toEqual(app.fieldMap);
+  });
+
+  it('round-trips a quote through quoteToRow -> quoteFromRow', () => {
+    const app = { templateId: 't1', companyId: 'seplat', kind: 'Proforma', quoteNumber: 'Q-001', markupPercent: 25, currency: 'USD', notes: 'n' };
+    const row = quoteToRow(app);
+    expect(row.markup_percent).toBe(25);
+    const back = quoteFromRow({ id: 'q1', ...row });
+    expect(back.companyId).toBe(app.companyId);
+    expect(back.kind).toBe('Proforma');
+    expect(back.markupPercent).toBe(25);
+    expect(back.currency).toBe('USD');
+  });
+
+  it('quoteFromRow defaults markupPercent to 30 when null', () => {
+    const q = quoteFromRow({ id: 'q2', kind: 'Quote', markup_percent: null });
+    expect(q.markupPercent).toBe(30);
+  });
+
+  it('round-trips a line item through quoteLineItemToRow -> quoteLineItemFromRow', () => {
+    const app = { quoteId: 'q1', itemType: 'product', itemId: 'drone', description: 'Aerial Drone Inspection', qty: 2, unitCost: 1000, markupMultiplier: 1.3, position: 0 };
+    const row = quoteLineItemToRow(app);
+    expect(row.unit_cost).toBe(1000);
+    const back = quoteLineItemFromRow({ id: 'li1', ...row });
+    expect(back.itemType).toBe('product');
+    expect(back.qty).toBe(2);
+    expect(back.markupMultiplier).toBe(1.3);
   });
 });

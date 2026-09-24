@@ -20,7 +20,10 @@ import * as profilesApi from './api/profiles.js';
 import * as categoriesApi from './api/categories.js';
 import * as servicesApi from './api/services.js';
 import * as storeSharesApi from './api/storeShares.js';
-import { uploadFile, signedUrl, removeFile } from './storage.js';
+import * as quoteTemplatesApi from './api/quoteTemplates.js';
+import * as quotesApi from './api/quotes.js';
+import { detectTokens, buildQuoteFieldValues, renderTemplate, buildQuoteMarkdown, computeLineTotals, QUOTE_FIELDS } from './quoteFields.js';
+import { uploadFile, signedUrl, removeFile, downloadText } from './storage.js';
 import { csvToObjects } from './csv.js';
 import { emailRule, normalizeLinkedin, normalizeUrlish, urlRule, dateRule, validateChanged } from './validate.js';
 
@@ -48,6 +51,7 @@ const ICONS = {
   radar:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><circle cx="10" cy="10" r="7.2" stroke="currentColor" stroke-width="1.3"/><circle cx="10" cy="10" r="3.8" stroke="currentColor" stroke-width="1.2"/><path d="M10 10L15.5 5.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><circle cx="10" cy="10" r="0.9" fill="currentColor"/></svg>',
   clip:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><path d="M7 5.5V4.2a2 2 0 0 1 4 0v6.6a3.5 3.5 0 1 1-7 0V6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><rect x="6.5" y="4.5" width="4" height="7" rx="1.2" stroke="currentColor" stroke-width="1.2"/></svg>',
   doc:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><path d="M5.5 2.5h6l3 3v12h-9z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M11.5 2.5v3h3" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M7.3 10h5.4M7.3 12.4h5.4M7.3 14.8h3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+  docPlus:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><path d="M5.5 2.5h6l3 3v12h-9z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M11.5 2.5v3h3" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 11.5h4M10 9.5v4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
   scroll:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><rect x="2" y="6" width="16" height="8" rx="2" stroke="currentColor" stroke-width="1.3"/><path d="M6 10h.01M9.5 10h.01M13 10h5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
   building2:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><rect x="2.5" y="7" width="6" height="10" stroke="currentColor" stroke-width="1.3"/><rect x="11.5" y="3" width="6" height="14" stroke="currentColor" stroke-width="1.3"/><path d="M14 6.3h1M14 9h1M14 11.7h1" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
   calendar:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><rect x="2.5" y="4" width="15" height="13.5" rx="1.8" stroke="currentColor" stroke-width="1.3"/><path d="M2.5 8h15M6.3 2.3v3M13.7 2.3v3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M6 11h2M9.5 11h2M13 11h1M6 14h2M9.5 14h2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
@@ -657,6 +661,8 @@ const ui = {
   storeSelected:new Set(),
   storeExpanded:new Set(), // list-view "expand for more info" (V2 HT-C)
   storeVisibleCount:50,    // pagination — "5 columns by 10 rows" (V2 HT-C)
+  createTab:'quotes',      // 'quotes' | 'templates' — Create tab sub-nav (V2 HT-D)
+  drawerQuoteId:null,
   drawerKind:null,        // 'company' | 'product' | 'service' | 'competitor' | 'event' | null
   drawerCompanyId:null,
   drawerProductId:null,
@@ -696,6 +702,36 @@ function loadStoreShares(){
     .catch(()=>{})
     .finally(()=>{ STORE_SHARES.loading = false; if (ui.view==='solutions') renderView(); });
 }
+// Create tab data (V2 HT-D) — lazy-loaded on first visit, same pattern as
+// SETTINGS/STORE_SHARES. Line items load per-quote, on demand (a quote list
+// could grow; no need to pull every quote's items up front).
+const CREATE_DATA = { templates: [], quotes: [], loaded: false, loading: false };
+function loadCreateData(){
+  if (CREATE_DATA.loading) return;
+  CREATE_DATA.loading = true;
+  Promise.all([quoteTemplatesApi.listAll(), quotesApi.listAll()])
+    .then(([templates, quotes])=>{ CREATE_DATA.templates = templates; CREATE_DATA.quotes = quotes; CREATE_DATA.loaded = true; })
+    .catch(()=>{ toast('Could not load templates/quotes'); })
+    .finally(()=>{ CREATE_DATA.loading = false; if (ui.view==='create') renderView(); else renderApp(); });
+}
+function reloadCreateData(){ CREATE_DATA.loaded = false; loadCreateData(); }
+
+// The open quote's line items + its template's raw file text (for live
+// preview) — loaded per-quote, on demand, mirroring ITEM_SHARE's pattern.
+const QUOTE_EDITOR = { quoteId: null, lineItems: [], templateText: '', loaded: false, loading: false };
+function loadQuoteEditor(quote){
+  if (QUOTE_EDITOR.loading) return;
+  QUOTE_EDITOR.loading = true;
+  const tpl = quoteTemplateById(quote.templateId);
+  Promise.all([
+    quotesApi.listLineItems(quote.id),
+    tpl ? downloadText(tpl.filePath).catch(()=>'') : Promise.resolve(''),
+  ]).then(([lineItems, templateText])=>{
+    QUOTE_EDITOR.quoteId = quote.id; QUOTE_EDITOR.lineItems = lineItems; QUOTE_EDITOR.templateText = templateText; QUOTE_EDITOR.loaded = true;
+  }).catch(()=>{})
+    .finally(()=>{ QUOTE_EDITOR.loading = false; if (ui.drawerQuoteId===quote.id) renderQuoteDrawer(); });
+}
+
 // The per-item Share section shown in the product/service drawers.
 const ITEM_SHARE = { key: null, teammates: [], shares: [], loaded: false, loading: false };
 function loadItemShares(kind, id){
@@ -836,6 +872,7 @@ function navCounts(){
     competitors: DATA.competitors.length,
     research: DATA.research.length,
     events: DATA.events.length,
+    quotes: CREATE_DATA.loaded ? CREATE_DATA.quotes.length : undefined,
   };
 }
 
@@ -850,6 +887,7 @@ function renderApp(){
     {id:'research', label:'Research', icon:ICONS.clip, count:n.research},
     {id:'tasks', label:'Plan', icon:ICONS.task, count:n.tasks},
     {id:'solutions', label:'Store', icon:ICONS.bolt, count:n.products},
+    {id:'create', label:'Create', icon:ICONS.docPlus, count:n.quotes},
     {id:'reports', label:'Reports', icon:ICONS.doc},
     {id:'settings', label:'Settings', icon:ICONS.shield},
   ];
@@ -897,6 +935,9 @@ function renderApp(){
         ${ui.view==='competitors' ? `<button class="btn btn-primary" id="addCompetitorBtn">${ICONS.plus} Competitor</button>`:''}
         ${ui.view==='events' ? `<button class="btn btn-primary" id="addEventBtn">${ICONS.plus} Event</button>`:''}
         ${ui.view==='research' ? `<button class="btn btn-ghost" id="importResearchBtn">${ICONS.upload} Import clips</button><input type="file" id="importResearchFile" accept="application/json" style="display:none"><button class="btn btn-primary" id="addResearchBtn">${ICONS.plus} Clip</button>`:''}
+        ${ui.view==='create' && CREATE_DATA.loaded ? (ui.createTab==='templates'
+          ? `<button class="btn btn-primary" id="uploadTemplateBtn">${ICONS.upload} Upload template</button>`
+          : `<button class="btn btn-primary" id="addQuoteBtn">${ICONS.plus} New quote</button>`) : ''}
       </div>
       <div class="view" id="viewMount"></div>
     </div>
@@ -906,10 +947,10 @@ function renderApp(){
 }
 
 function viewTitle(){
-  return ({dashboard:'Overview', companies:'Companies', contacts:'Contacts', tasks:'Plan', solutions:'Store', competitors:'Competition Dashboard', research:'Research', reports:'Report Builder', events:'Events', settings:'Settings'})[ui.view];
+  return ({dashboard:'Overview', companies:'Companies', contacts:'Contacts', tasks:'Plan', solutions:'Store', create:'Create', competitors:'Competition Dashboard', research:'Research', reports:'Report Builder', events:'Events', settings:'Settings'})[ui.view];
 }
 function viewCrumb(){
-  return ({dashboard:'Pipeline / Overview', companies:'Pipeline / Accounts', contacts:'Pipeline / People', tasks:'Pipeline / Actions', solutions:'Pipeline / Catalog', competitors:'Pipeline / Market Watch', research:'Pipeline / Clips', reports:'Pipeline / Export', events:'Pipeline / Events', settings:'Pipeline / Admin'})[ui.view];
+  return ({dashboard:'Pipeline / Overview', companies:'Pipeline / Accounts', contacts:'Pipeline / People', tasks:'Pipeline / Actions', solutions:'Pipeline / Catalog', create:'Pipeline / Quotes', competitors:'Pipeline / Market Watch', research:'Pipeline / Clips', reports:'Pipeline / Export', events:'Pipeline / Events', settings:'Pipeline / Admin'})[ui.view];
 }
 
 function bindShell(){
@@ -999,6 +1040,7 @@ function renderView(){
   else if (ui.view==='contacts') mount.innerHTML = renderContacts();
   else if (ui.view==='tasks') mount.innerHTML = renderTasks();
   else if (ui.view==='solutions') mount.innerHTML = renderSolutions();
+  else if (ui.view==='create') mount.innerHTML = renderCreate();
   else if (ui.view==='competitors') mount.innerHTML = renderCompetitors();
   else if (ui.view==='research') mount.innerHTML = renderResearch();
   else if (ui.view==='reports') mount.innerHTML = renderReports();
@@ -1431,6 +1473,16 @@ function openCompetitorDrawer(id){
   document.getElementById('scrim').onclick = closeDrawer;
   renderCompetitorDrawer();
 }
+function openQuoteDrawer(id){
+  ui.drawerKind = 'quote';
+  ui.drawerQuoteId = id;
+  ui.drawerCompanyId = null; ui.drawerProductId = null; ui.drawerServiceId = null; ui.drawerCompetitorId = null;
+  document.getElementById('scrim').classList.add('open');
+  document.getElementById('drawer').classList.add('open');
+  document.getElementById('scrim').onclick = closeDrawer;
+  QUOTE_EDITOR.loaded = false;
+  renderQuoteDrawer();
+}
 function closeDrawer(){
   document.getElementById('scrim').classList.remove('open');
   document.getElementById('drawer').classList.remove('open');
@@ -1440,6 +1492,7 @@ function closeDrawer(){
   ui.drawerServiceId = null;
   ui.drawerCompetitorId = null;
   ui.drawerEventId = null;
+  ui.drawerQuoteId = null;
 }
 function renderDrawer(){
   const c = companyById(ui.drawerCompanyId);
@@ -3827,6 +3880,7 @@ async function enterApp(){
   AUTH.mode = 'app';
   SETTINGS.loaded = false;
   STORE_SHARES.loaded = false; ITEM_SHARE.key = null;
+  CREATE_DATA.loaded = false; QUOTE_EDITOR.loaded = false; QUOTE_EDITOR.quoteId = null;
   const u = new URL(location.href);
   const storeParam = u.searchParams.get('store');   // V2 HT-C share deep link
   if (location.search.indexOf('invite=') !== -1 || location.search.indexOf('email=') !== -1 || storeParam){
@@ -4332,6 +4386,422 @@ function bindSolutionsControls(){
 }
 
 /* ============================================================
+   CREATE TAB (V2 HT-D) — Quotes/Proforma/Commercials built from an
+   uploaded template. .html templates only (PRD-v2 §4 — .docx deferred,
+   not built half-way).
+   ============================================================ */
+function quoteTemplateById(id){ return CREATE_DATA.templates.find(t=>t.id===id); }
+function quoteById(id){ return CREATE_DATA.quotes.find(q=>q.id===id); }
+
+function renderCreate(){
+  if (!CREATE_DATA.loaded) return `<div class="empty" style="padding:14px;">${ICONS.empty}<div>Loading…</div></div>`;
+  return `
+    <div class="toolbar">
+      <div class="seg">
+        <button data-create-tab="quotes" class="${ui.createTab==='quotes'?'active':''}">Quotes</button>
+        <button data-create-tab="templates" class="${ui.createTab==='templates'?'active':''}">Templates</button>
+      </div>
+    </div>
+    ${ui.createTab==='templates' ? renderTemplatesList() : renderQuotesList()}
+  `;
+}
+
+function renderTemplatesList(){
+  const list = CREATE_DATA.templates;
+  if (!list.length) return `<div class="empty">${ICONS.empty}<div>No templates uploaded yet — click "Upload template" to add your first Quote/Proforma/Commercial template.</div></div>`;
+  return `<div class="sol-grid">
+    ${list.map(t=>{
+      const mapped = Object.values(t.fieldMap||{}).filter(Boolean).length;
+      return `
+      <div class="card sol-card" data-open-template="${t.id}" style="cursor:pointer;">
+        <div class="row" style="justify-content:space-between;margin-bottom:8px;">
+          <span class="chip chip-teal">${esc(t.kind)}</span>
+          <span class="sub">${mapped} field${mapped===1?'':'s'} mapped</span>
+        </div>
+        <h3>${esc(t.name)}</h3>
+        <div class="adopters">${esc(t.filePath.split('/').pop())}</div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+function renderQuotesList(){
+  const list = CREATE_DATA.quotes;
+  if (!list.length) return `<div class="empty">${ICONS.empty}<div>No quotes yet — click "New quote" to build one from a template.</div></div>`;
+  return `
+  <div class="card tablewrap">
+    <table>
+      <thead><tr><th>Kind</th><th>Number</th><th>Client</th><th>Currency</th><th>Created</th></tr></thead>
+      <tbody>
+        ${list.map(q=>{
+          const co = companyById(q.companyId);
+          return `<tr data-open-quote="${q.id}" style="cursor:pointer;">
+            <td><span class="chip chip-teal">${esc(q.kind)}</span></td>
+            <td>${esc(q.quoteNumber||'—')}</td>
+            <td>${co?esc(co.name):'<span class="sub">—</span>'}</td>
+            <td class="tabular">${esc(q.currency)}</td>
+            <td class="sub">${q.createdAt?new Date(q.createdAt).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):''}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+// Shared by the upload and manage-template modals.
+function tokenMapRowsHtml(tokens, fieldMap){
+  if (!tokens.length) return `<p class="sub" style="margin-top:8px;">No {{tokens}} found in this file — it'll upload as-is with nothing to fill in.</p>`;
+  return `<div class="dsec" style="margin-top:10px;">
+    <div class="dsec-head"><h4>Map each token</h4></div>
+    ${tokens.map(tok=>`
+      <div class="add-inline">
+        <span style="flex:1;font-family:var(--font-mono);font-size:12px;">{{${esc(tok)}}}</span>
+        <select data-token-map="${esc(tok)}">
+          <option value="">— leave as text —</option>
+          ${QUOTE_FIELDS.map(f=>`<option value="${f.key}" ${(fieldMap[tok]===f.key)?'selected':''}>${esc(f.label)}</option>`).join('')}
+        </select>
+      </div>`).join('')}
+  </div>`;
+}
+function readTokenMap(body, tokens){
+  const fieldMap = {};
+  tokens.forEach(tok=>{
+    const sel = body.querySelector(`[data-token-map="${tok}"]`);
+    if (sel && sel.value) fieldMap[tok] = sel.value;
+  });
+  return fieldMap;
+}
+
+function openUploadTemplateModal(){
+  openModal(`
+    <h3>Upload template</h3>
+    <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">
+      .html only for now. Use <code>{{token}}</code> placeholders anywhere in the file — you'll map each one below.
+    </p>
+    <div class="field"><label>Name</label><input id="mName" placeholder="e.g. Standard Quote"></div>
+    <div class="field"><label>Type</label><select id="mKind"><option>Quote</option><option>Proforma</option><option>Commercial</option></select></div>
+    <div class="field"><label>Template file (.html)</label><input type="file" id="mFile" accept=".html,text/html"></div>
+    <div id="mMapArea"></div>
+    <div class="modal-actions">
+      <button class="btn" id="mCancel">Cancel</button>
+      <button class="btn btn-primary" id="mSave" disabled>Save template</button>
+    </div>
+  `, body=>{
+    let rawText = ''; let tokens = [];
+    body.querySelector('#mCancel').onclick = closeModal;
+    const saveBtn = body.querySelector('#mSave');
+    body.querySelector('#mFile').addEventListener('change', async e=>{
+      const file = e.target.files[0]; if (!file) return;
+      rawText = await file.text();
+      tokens = detectTokens(rawText);
+      body.querySelector('#mMapArea').innerHTML = tokenMapRowsHtml(tokens, {});
+      saveBtn.disabled = false;
+    });
+    saveBtn.onclick = async ()=>{
+      const name = body.querySelector('#mName').value.trim();
+      if (!name){ toast('Name required'); return; }
+      const file = body.querySelector('#mFile').files[0];
+      if (!file){ toast('Choose a file first'); return; }
+      saveBtn.disabled = true;
+      try{
+        const path = await uploadFile(file, 'quote-templates');
+        const fieldMap = readTokenMap(body, tokens);
+        const saved = await quoteTemplatesApi.create({ name, kind: body.querySelector('#mKind').value, filePath: path, fieldMap });
+        CREATE_DATA.templates.unshift(saved);
+        closeModal(); renderApp(); toast('Template saved');
+      }catch(e){ toast('Could not save — ' + (e.message || 'try again')); saveBtn.disabled = false; }
+    };
+  });
+}
+
+function openManageTemplateModal(id){
+  const t = quoteTemplateById(id);
+  if (!t) return;
+  openModal(`
+    <h3>Manage template</h3>
+    <div class="field"><label>Name</label><input id="mName" value="${esc(t.name)}"></div>
+    <div id="mMapArea"><p class="sub">Loading…</p></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="mDelete" style="margin-right:auto;color:#f3d9d6;">Delete</button>
+      <button class="btn" id="mCancel">Cancel</button>
+      <button class="btn btn-primary" id="mSave">Save</button>
+    </div>
+  `, body=>{
+    let tokens = [];
+    body.querySelector('#mCancel').onclick = closeModal;
+    downloadText(t.filePath).then(rawText=>{
+      tokens = detectTokens(rawText);
+      body.querySelector('#mMapArea').innerHTML = tokenMapRowsHtml(tokens, t.fieldMap||{});
+    }).catch(()=>{
+      body.querySelector('#mMapArea').innerHTML = `<p class="sub">Could not load the template file to re-map it — you can still rename or delete.</p>`;
+    });
+    body.querySelector('#mSave').onclick = async ()=>{
+      const name = body.querySelector('#mName').value.trim();
+      if (!name){ toast('Name required'); return; }
+      const fieldMap = readTokenMap(body, tokens);
+      try{
+        await quoteTemplatesApi.rename(t.id, name);
+        await quoteTemplatesApi.setFieldMap(t.id, fieldMap);
+        t.name = name; t.fieldMap = fieldMap;
+        closeModal(); renderApp(); toast('Template saved');
+      }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+    };
+    body.querySelector('#mDelete').onclick = ()=>{
+      openConfirmModal(`Delete "${t.name}"? Quotes already built from it keep working — their line items don't change — but you won't be able to start a new one from it.`, async ()=>{
+        try{
+          await quoteTemplatesApi.remove(t.id);
+          await removeFile(t.filePath);
+          CREATE_DATA.templates = CREATE_DATA.templates.filter(x=>x.id!==t.id);
+          closeModal(); renderApp(); toast('Template deleted');
+        }catch(e){ toast('Could not delete — ' + (e.message || 'try again')); }
+      });
+    };
+  });
+}
+
+function openAddQuoteModal(){
+  if (!CREATE_DATA.templates.length){ toast('Upload a template first'); return; }
+  const templateOptions = CREATE_DATA.templates.map(t=>`<option value="${t.id}">${esc(t.name)} (${esc(t.kind)})</option>`).join('');
+  const companyOptions = DATA.companies.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  openModal(`
+    <h3>New quote</h3>
+    <div class="field"><label>Template</label><select id="mTemplate">${templateOptions}</select></div>
+    <div class="field"><label>Type</label><select id="mKind"><option>Quote</option><option>Proforma</option><option>Commercial</option></select></div>
+    <div class="field"><label>Client (optional)</label><select id="mCo"><option value="">— none yet —</option>${companyOptions}</select></div>
+    <div class="field"><label>Quote number (optional)</label><input id="mNumber" placeholder="e.g. Q-2026-014"></div>
+    <div class="field"><label>Currency</label><select id="mCurrency"><option value="NGN">NGN</option><option value="USD">USD</option></select></div>
+    <div class="field"><label>Default markup %</label><input id="mMarkup" type="number" value="30" min="0" step="1"></div>
+    <div class="modal-actions">
+      <button class="btn" id="mCancel">Cancel</button>
+      <button class="btn btn-primary" id="mSave">Create quote</button>
+    </div>
+  `, body=>{
+    body.querySelector('#mCancel').onclick = closeModal;
+    const tplSel = body.querySelector('#mTemplate');
+    const kindSel = body.querySelector('#mKind');
+    const syncKind = ()=>{ const t = quoteTemplateById(tplSel.value); if (t) kindSel.value = t.kind; };
+    tplSel.addEventListener('change', syncKind);
+    syncKind();
+    body.querySelector('#mSave').onclick = async ()=>{
+      const save = body.querySelector('#mSave'); save.disabled = true;
+      try{
+        const quote = {
+          id: crypto.randomUUID(), templateId: tplSel.value, kind: kindSel.value,
+          companyId: body.querySelector('#mCo').value, quoteNumber: body.querySelector('#mNumber').value.trim(),
+          currency: body.querySelector('#mCurrency').value, markupPercent: Number(body.querySelector('#mMarkup').value) || 30,
+        };
+        const saved = await quotesApi.create(quote);
+        CREATE_DATA.quotes.unshift(saved);
+        closeModal(); renderApp();
+        openQuoteDrawer(saved.id);
+      }catch(e){ toast('Could not create — ' + (e.message || 'try again')); save.disabled = false; }
+    };
+  });
+}
+
+function updateQuotePreview(q, tpl){
+  const frame = document.getElementById('quotePreview');
+  if (!frame || !tpl || !(QUOTE_EDITOR.loaded && QUOTE_EDITOR.quoteId===q.id)) return;
+  const co = companyById(q.companyId);
+  const fieldValues = buildQuoteFieldValues({ quote: q, lineItems: QUOTE_EDITOR.lineItems, companyName: co?co.name:'', preparedBy: currentUserName() });
+  frame.srcdoc = renderTemplate(QUOTE_EDITOR.templateText, tpl.fieldMap, fieldValues);
+}
+
+function renderQuoteDrawer(){
+  const q = quoteById(ui.drawerQuoteId);
+  const drawer = document.getElementById('drawer');
+  if (!q){ drawer.innerHTML=''; return; }
+  const tpl = quoteTemplateById(q.templateId);
+  const ready = QUOTE_EDITOR.loaded && QUOTE_EDITOR.quoteId===q.id;
+  const lineItems = ready ? QUOTE_EDITOR.lineItems : [];
+  if (!ready) loadQuoteEditor(q);
+
+  const rows = computeLineTotals(lineItems);
+  const subtotal = rows.reduce((s,r)=>s+r.lineTotal, 0);
+  const fmt = n => n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  drawer.innerHTML = `
+    <button class="drawer-close" id="drawerCloseBtn">${ICONS.x}</button>
+    <div class="drawer-head">
+      <div class="eyebrow">${tpl?esc(tpl.name):'No template — it may have been deleted'}</div>
+      <h2>${esc(q.kind)}${q.quoteNumber?' — '+esc(q.quoteNumber):''}</h2>
+      <div class="field-row">
+        <select id="kindSelect"><option ${q.kind==='Quote'?'selected':''}>Quote</option><option ${q.kind==='Proforma'?'selected':''}>Proforma</option><option ${q.kind==='Commercial'?'selected':''}>Commercial</option></select>
+        <button class="btn btn-sm btn-ghost" id="deleteQuoteBtn" style="color:#f3d9d6;border:1px solid var(--navy-line);">Delete quote</button>
+      </div>
+    </div>
+    <div class="drawer-body">
+      <div class="dsec">
+        <div class="dsec-head"><h4>Details</h4></div>
+        <div class="add-inline"><select id="qCompany"><option value="">— no client yet —</option>${DATA.companies.map(c=>`<option value="${c.id}" ${q.companyId===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>
+        <div class="add-inline"><input id="qNumber" value="${esc(q.quoteNumber||'')}" placeholder="Quote number"></div>
+        <div class="add-inline">
+          <select id="qCurrency"><option value="NGN" ${q.currency==='NGN'?'selected':''}>NGN</option><option value="USD" ${q.currency==='USD'?'selected':''}>USD</option></select>
+          <input id="qMarkup" type="number" min="0" step="1" value="${q.markupPercent}" placeholder="Default markup %">
+        </div>
+        <textarea class="notes-area" id="qNotes" placeholder="Notes…">${esc(q.notes||'')}</textarea>
+        <div class="small-btn-row"><button class="btn btn-sm btn-primary" id="saveQuoteDetailsBtn">Save details</button></div>
+      </div>
+
+      <div class="dsec">
+        <div class="dsec-head"><h4>Line items (${lineItems.length})</h4></div>
+        ${!ready ? `<div class="sub">Loading…</div>` : lineItems.length===0 ? `<div class="empty" style="padding:14px;">${ICONS.empty}<div>No items yet — search below to add a product or service.</div></div>` :
+          rows.map(r=>`
+            <div class="rec-card">
+              <div class="row" style="justify-content:space-between;gap:8px;">
+                <div class="rname">${esc(r.description)}</div>
+                <button class="x" data-del-li="${r.id}" style="background:none;border:none;color:var(--teal-strong);cursor:pointer;">${ICONS.x}</button>
+              </div>
+              <div class="row" style="gap:10px;margin-top:6px;flex-wrap:wrap;align-items:center;">
+                <label class="sub">Qty <input type="number" min="0.01" step="1" value="${r.qty}" data-li-field="qty" data-li-id="${r.id}" style="width:60px;"></label>
+                <label class="sub">Cost <input type="number" min="0" step="0.01" value="${r.unitCost}" data-li-field="unitCost" data-li-id="${r.id}" style="width:90px;"></label>
+                <label class="sub">Markup × <input type="number" min="0" step="0.01" value="${r.markupMultiplier}" data-li-field="markupMultiplier" data-li-id="${r.id}" style="width:70px;"></label>
+                <span class="sub">= ${esc(q.currency)} ${fmt(r.lineTotal)}</span>
+              </div>
+            </div>
+          `).join('')}
+        ${ready ? `
+        <div class="add-inline"><input id="liSearch" placeholder="Search products & services to add…"></div>
+        <div id="liResults"></div>` : ''}
+        <div class="sub" style="margin-top:10px;text-align:right;font-size:14px;"><b>Total: ${esc(q.currency)} ${fmt(subtotal)}</b></div>
+      </div>
+
+      ${tpl ? `
+      <div class="dsec">
+        <div class="dsec-head"><h4>Preview & export</h4></div>
+        <div class="report-preview-wrap" style="height:360px;">
+          <iframe id="quotePreview" sandbox referrerpolicy="no-referrer" style="width:100%;height:100%;border:1px solid var(--line);border-radius:8px;"></iframe>
+        </div>
+        <div class="small-btn-row" style="margin-top:10px;">
+          <button class="btn btn-sm" id="exportQuoteHtmlBtn">Export .html</button>
+          <button class="btn btn-sm btn-ghost" id="exportQuoteMdBtn">Export .md</button>
+        </div>
+      </div>` : `<div class="dsec"><div class="empty" style="padding:14px;">${ICONS.empty}<div>This quote's template was deleted — export still works as .md.</div></div>
+        <div class="small-btn-row"><button class="btn btn-sm btn-ghost" id="exportQuoteMdBtn">Export .md</button></div></div>`}
+    </div>
+  `;
+  bindQuoteDrawer(q, tpl);
+}
+
+function bindQuoteDrawer(q, tpl){
+  document.getElementById('drawerCloseBtn').addEventListener('click', closeDrawer);
+  updateQuotePreview(q, tpl);
+
+  document.getElementById('kindSelect').addEventListener('change', async e=>{
+    const kind = e.target.value;
+    try{ await quotesApi.setKind(q.id, kind); q.kind = kind; renderApp(); openQuoteDrawer(q.id); }
+    catch(err){ toast('Could not save — ' + (err.message || 'try again')); }
+  });
+  document.getElementById('deleteQuoteBtn').addEventListener('click', ()=>{
+    openConfirmModal(`Delete this ${q.kind.toLowerCase()}? This can't be undone.`, async ()=>{
+      try{
+        await quotesApi.remove(q.id);
+        CREATE_DATA.quotes = CREATE_DATA.quotes.filter(x=>x.id!==q.id);
+        closeDrawer(); renderApp(); toast('Deleted');
+      }catch(e){ toast('Could not delete — ' + (e.message || 'try again')); }
+    });
+  });
+  document.getElementById('saveQuoteDetailsBtn').addEventListener('click', async ()=>{
+    const companyId = document.getElementById('qCompany').value;
+    const quoteNumber = document.getElementById('qNumber').value.trim();
+    const currency = document.getElementById('qCurrency').value;
+    const markupPercent = Number(document.getElementById('qMarkup').value) || 0;
+    const notes = document.getElementById('qNotes').value;
+    try{
+      await Promise.all([
+        quotesApi.setCompany(q.id, companyId),
+        quotesApi.setQuoteNumber(q.id, quoteNumber),
+        quotesApi.setCurrency(q.id, currency),
+        quotesApi.setMarkupPercent(q.id, markupPercent),
+        quotesApi.setNotes(q.id, notes),
+      ]);
+      q.companyId = companyId; q.quoteNumber = quoteNumber; q.currency = currency; q.markupPercent = markupPercent; q.notes = notes;
+      toast('Details saved'); renderApp(); openQuoteDrawer(q.id);
+    }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+  });
+
+  document.querySelectorAll('[data-li-field]').forEach(inp=>inp.addEventListener('change', async ()=>{
+    const id = inp.dataset.liId; const field = inp.dataset.liField;
+    const li = QUOTE_EDITOR.lineItems.find(x=>x.id===id);
+    if (!li) return;
+    const value = Number(inp.value);
+    if (Number.isNaN(value) || value<0 || (field==='qty' && value<=0)){ toast('Enter a valid number'); renderQuoteDrawer(); return; }
+    try{
+      await quotesApi.updateLineItem(id, { [field]: value });
+      li[field] = value;
+      renderQuoteDrawer();
+    }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+  }));
+  document.querySelectorAll('[data-del-li]').forEach(b=>b.addEventListener('click', async ()=>{
+    const id = b.dataset.delLi;
+    try{
+      await quotesApi.removeLineItem(id);
+      QUOTE_EDITOR.lineItems = QUOTE_EDITOR.lineItems.filter(x=>x.id!==id);
+      renderQuoteDrawer();
+    }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+  }));
+
+  const liSearch = document.getElementById('liSearch');
+  if (liSearch) liSearch.addEventListener('input', ()=>{
+    const qStr = liSearch.value.trim().toLowerCase();
+    const results = document.getElementById('liResults');
+    if (!qStr){ results.innerHTML=''; return; }
+    const productMatches = DATA.solutions.filter(s=>!s.archivedAt && s.name.toLowerCase().includes(qStr)).slice(0,5).map(s=>({...s, kind:'product'}));
+    const serviceMatches = DATA.services.filter(s=>!s.archivedAt && s.name.toLowerCase().includes(qStr)).slice(0,5).map(s=>({...s, kind:'service'}));
+    const matches = [...productMatches, ...serviceMatches];
+    results.innerHTML = matches.length===0 ? `<div class="sub" style="padding:6px;">No matches.</div>` :
+      matches.map(m=>`<div class="bullet solution" data-add-li="${m.kind}:${m.id}" style="cursor:pointer;">
+        <span style="flex:1;">${esc(m.name)} <span class="sub">(${m.kind})</span></span>
+        <span class="sub">${m.priceAmount!=null?esc(m.priceCurrency+' '+m.priceAmount.toLocaleString()):'no price set'}</span>
+      </div>`).join('');
+    document.querySelectorAll('[data-add-li]').forEach(el=>el.addEventListener('click', async ()=>{
+      const [kind, itemId] = el.dataset.addLi.split(':');
+      const item = kind==='service' ? serviceById(itemId) : solutionById(itemId);
+      if (!item) return;
+      try{
+        const saved = await quotesApi.addLineItem({
+          quoteId: q.id, itemType: kind, itemId: item.id, description: item.name,
+          qty: 1, unitCost: item.priceAmount || 0, markupMultiplier: 1 + (q.markupPercent/100),
+          position: QUOTE_EDITOR.lineItems.length,
+        });
+        QUOTE_EDITOR.lineItems.push(saved);
+        (kind==='service' ? servicesApi : productsApi).incrementAddedToQuoteCount(item.id, item.addedToQuoteCount).catch(()=>{});
+        item.addedToQuoteCount = (item.addedToQuoteCount||0) + 1;
+        liSearch.value = ''; results.innerHTML = '';
+        renderQuoteDrawer();
+        toast('Added');
+      }catch(e){ toast('Could not add — ' + (e.message || 'try again')); }
+    }));
+  });
+
+  const exportHtmlBtn = document.getElementById('exportQuoteHtmlBtn');
+  if (exportHtmlBtn) exportHtmlBtn.addEventListener('click', ()=>{
+    const co = companyById(q.companyId);
+    const fieldValues = buildQuoteFieldValues({ quote: q, lineItems: QUOTE_EDITOR.lineItems, companyName: co?co.name:'', preparedBy: currentUserName() });
+    const html = renderTemplate(QUOTE_EDITOR.templateText, tpl.fieldMap, fieldValues);
+    downloadFile(`${q.kind.toLowerCase()}-${q.quoteNumber || q.id.slice(0,8)}.html`, html, 'text/html');
+    logActivity(`Exported a ${q.kind.toLowerCase()}`, q.quoteNumber || q.id);
+  });
+  const exportMdBtn = document.getElementById('exportQuoteMdBtn');
+  if (exportMdBtn) exportMdBtn.addEventListener('click', ()=>{
+    const co = companyById(q.companyId);
+    const md = buildQuoteMarkdown({ quote: q, lineItems: QUOTE_EDITOR.lineItems, companyName: co?co.name:'' });
+    downloadFile(`${q.kind.toLowerCase()}-${q.quoteNumber || q.id.slice(0,8)}.md`, md, 'text/markdown');
+  });
+}
+
+function bindCreateControls(){
+  if (!CREATE_DATA.loaded) loadCreateData();
+  document.querySelectorAll('[data-create-tab]').forEach(b=>b.addEventListener('click', ()=>{ ui.createTab=b.dataset.createTab; renderApp(); }));
+  document.querySelectorAll('[data-open-template]').forEach(el=>el.addEventListener('click', ()=>openManageTemplateModal(el.dataset.openTemplate)));
+  document.querySelectorAll('[data-open-quote]').forEach(el=>el.addEventListener('click', ()=>openQuoteDrawer(el.dataset.openQuote)));
+  const uploadBtn = document.getElementById('uploadTemplateBtn');
+  if (uploadBtn) uploadBtn.addEventListener('click', openUploadTemplateModal);
+  const addQuoteBtn = document.getElementById('addQuoteBtn');
+  if (addQuoteBtn) addQuoteBtn.addEventListener('click', openAddQuoteModal);
+}
+
+/* ============================================================
    VIEW BINDING DISPATCH
    ============================================================ */
 function bindView(){
@@ -4339,6 +4809,7 @@ function bindView(){
   if (ui.view==='contacts') bindContactsControls();
   if (ui.view==='tasks') bindTasksControls();
   if (ui.view==='solutions') bindSolutionsControls();
+  if (ui.view==='create') bindCreateControls();
   if (ui.view==='competitors') bindCompetitorsControls();
   if (ui.view==='research') bindResearchControls();
   if (ui.view==='reports') bindReportsControls();
