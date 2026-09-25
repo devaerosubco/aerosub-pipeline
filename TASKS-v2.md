@@ -15,7 +15,7 @@ Companion doc: [PRD-v2.md](PRD-v2.md). Refs like "PRD-v2 §5" point into it. Thi
 | HT-E — RFQ Manager | ✅ 2026-09-24, verified live (db:check 28 tables/106 policies, test:rls 89/89, Playwright 11/11) |
 | HT-F — Personal vs. general Tasks & Companies | ✅ 2026-09-24, verified live (db:check, test:rls 105/105, 2-browser-session Playwright 9/9) |
 | HT-G — Insights tab | ✅ 2026-09-25, verified live (db:check/test:rls 105/105 unaffected — schema-free, Playwright 13/13) |
-| HT-H — Alerts + RSS feed connector | pending |
+| HT-H — Alerts + RSS feed connector | ✅ 2026-09-25, verified live (db:check 29 tables/110 policies, test:rls 115/115, Edge Function invoked live + idempotency proven, Playwright 11/11) |
 
 Each queued Heavy Task below is written to the same level of detail V1's
 `TASKS.md` used, so a future session can pick any of them up cold — read the
@@ -494,23 +494,127 @@ with the user — "Insights", not "Analytics").
 on `pg_cron` populating `news_items` — the project's first backend compute,
 scoped tightly and documented as a deliberate exception.
 
-- [ ] Client-side "events starting within N days" check + in-app bell,
-  per-user opt-in in Settings.
-- [ ] `rss_sources` table (admin-managed, same shape as `connectors`).
-- [ ] One Supabase Edge Function on `pg_cron`, polling `rss_sources` and
-  upserting into `news_items` (`live=true`).
-- [ ] Tests: the Edge Function's upsert logic (idempotent re-poll, no dupes);
-  a real-browser pass for the alert banner/bell.
+- [x] Client-side "events starting within N days" check + in-app bell,
+  per-user opt-in in Settings. `EVENT_ALERT_WINDOW_DAYS = 30`
+  (`src/main.js`); `profiles.event_alerts_enabled` (default true), a
+  self-service column exactly like full_name/department, no lock-trigger
+  change needed. Bell disables entirely (not just the badge) when off.
+- [x] `rss_sources` table (admin-managed, same shape as `connectors`),
+  write-gated to `is_admin()` like the Phase-0 category tables.
+- [x] One Supabase Edge Function on `pg_cron`, polling `rss_sources` and
+  upserting into `news_items` (`live=true`). `supabase/functions/rss-poll`;
+  hand-rolled RSS/Atom parser (`parse.js`, no XML-parsing dependency, same
+  call as HT-B's CSV parser); scheduled every 6h via `pg_net` + Vault-secret
+  lookups (no hardcoded URL/key in the migration — a documented one-time
+  manual bootstrap per environment, mirroring the admin-role bootstrap).
+  ↳ note: the function's entry file had to be named `index.ts`, not `.js`
+  like everything else in this project — `supabase functions serve`
+  silently ignored an `index.js` (`Functions config: {}`, then 404 on every
+  invoke) until renamed. No actual TypeScript syntax is used.
+- [x] Tests: the Edge Function's upsert logic (idempotent re-poll, no dupes);
+  a real-browser pass for the alert banner/bell. Unit tests for the parser
+  (`parse.test.js`, 10/10); `rls-test.mjs` proves the DB-level idempotent
+  upsert (re-upserting the same url leaves exactly one row, with the
+  re-poll's data, not a no-op) and the admin-write/member-read RLS shape;
+  **also invoked the deployed function live** (`supabase functions serve` +
+  curl) against a local test feed — first poll upserted 2 items, a second
+  poll of the same feed left the row count at 2 (not 4), proving idempotency
+  end-to-end, not just at the unit/DB-constraint level. A real-browser
+  Playwright pass covered the bell (badge count, panel contents, opt-out/
+  opt-in) and the RSS sources panel (member sees it read-only, admin can
+  add/remove through the modal and it renders without a reload) — 11/11,
+  zero console/page errors.
+- [x] `vitest` 91/91 (81 + 10 new parser tests). `db:check` 29 tables/110
+  policies plus profiles.event_alerts_enabled/news_items unique-url-index/
+  cron-job-registered checks, all green (same 4 pre-existing environmental
+  drift failures as every prior phase — accumulated test-account rows,
+  unrelated to this change). `test:rls` 115/115.
 
 ---
 
-## Final report (when HT-A through HT-H are all `[x]`)
+## Final report (HT-A through HT-H — all shipped 2026-09-17 through 2026-09-25)
 
-- What was built, phase by phase.
-- Deviations (PRD-v2 §9, D2-1…D2-4) and why.
-- Deliberately cut / deferred: public share links (§0), true scheduled push
-  notifications (§8), `.docx` templates if they didn't land (§4).
-- Accepted limitations: no live FX conversion, weekly-granularity RSS polling
-  (`pg_cron` schedule TBD per source), personal/general visibility is
-  last-write-wins on the `visibility` flag itself (no merge UI, matching V1's
-  existing last-write-wins stance elsewhere).
+**What was built, phase by phase:**
+- **HT-A — Foundation.** `profiles.role` (member/admin) + `is_admin()`,
+  `companies.sector`, `product_categories`/`service_categories`
+  (admin-managed taxonomies). Reintroduced RBAC that V1 deliberately dropped
+  — deliberately narrow, gating categories only at the time.
+- **HT-B/HT-C — Store catalog.** Product/Service sub-tabs, bulk (CSV-only)
+  and single upload, a dashboard with recently-added/most-searched/most-
+  added-to-quote tiles, card/list toggle, bulk actions (archive/export/
+  add-to-quote/delete), members-only per-item sharing. First use of
+  Supabase Storage (a private bucket + signed URLs).
+- **HT-D — Create tab.** Uploaded-`.html`-template + fixed-field mapping,
+  quote line items with qty×cost×markup, sandboxed preview, `.html`/`.md`
+  export.
+- **HT-E — RFQ Manager.** Gallery, vendor research, publish/assign locked to
+  admin by a DB trigger, Branch, export-as-quote (vendor fields never leave
+  the tab).
+- **HT-F — Personal vs. general visibility.** `owner_id`/`assigned_to`/
+  `visibility` on `tasks`/`companies`; the biggest single behavior change in
+  V2 — reverses the flat "every member sees every row" model those two
+  tables had since V1. Verified with two independent concurrent browser
+  sessions, not just one.
+- **HT-G — Insights tab.** Read-only aggregations (research/RFQ/task
+  counts), no new tables. Named "Insights" over "Analytics" per the user's
+  choice, to avoid colliding with the existing "Reports" export tab.
+- **HT-H — Alerts + RSS feed connector.** Client-side event-alert bell
+  (per-user opt-in), and one admin-managed `rss_sources` table + one
+  Supabase Edge Function on `pg_cron` — the project's first and only
+  backend-compute component.
+
+**Deviations (PRD-v2 §9):**
+- **D2-1** — `profiles.role` reintroduced (V1 D-3 had removed `permission`
+  entirely). Grew narrowly, phase by phase, rather than being pre-declared:
+  categories (HT-A) → RFQ publish/assign (HT-E) → RSS sources (HT-H).
+- **D2-2** — Company `sector` stayed free-text + suggested list, never
+  became a controlled taxonomy like product/service categories — a
+  deliberate difference in constraint ("must be within what we offer" vs.
+  "let users specify").
+- **D2-3** — Public/no-login sharing (implied by the original item 5) was
+  deferred out of HT-C entirely; only members-only sharing shipped.
+- **D2-4** — HT-F's personal/general reversal, as above.
+- **D2-5** (new) — HT-H's Edge Function entry file is `index.ts`, the one
+  non-`.js` file in the whole project — a hard requirement of Supabase's
+  function-discovery tooling (confirmed by a silent-404 failure locally
+  until renamed), not a language choice; no TypeScript syntax is used in it.
+
+**Deliberately cut / deferred:**
+- Public, no-login share links (§0/§2) — members-only sharing shipped
+  instead.
+- `.docx` quote templates (§4) — only `.html` templates shipped; `.docx`
+  via docxtemplater/pizzip was flagged as a fast-follow, never attempted.
+- True scheduled push notifications (§8) — the event-alert bell is
+  client-side, on-load only; a push channel would need a second Edge
+  Function, not built.
+- Per-item alert dismissal (§8) — the bell always reflects current
+  upcoming events; a "seen" record per user per event would need its own
+  table, out of scope.
+- An org-wide (RLS-bypassing) task-count aggregate for Insights (§7) — the
+  sector/owner panels only reflect what the viewer can see under HT-F's
+  visibility rules; a `SECURITY DEFINER` RPC would remove that caveat but
+  wasn't built.
+
+**Accepted limitations:**
+- No live FX conversion for Store pricing (Naira↔Dollar is a manual
+  switch).
+- RSS polling is fixed at every 6 hours for every source alike (no
+  per-source schedule).
+- Personal/general visibility is last-write-wins on the `visibility` flag
+  itself (no merge UI), matching V1's existing last-write-wins stance
+  elsewhere.
+- The `pg_cron`→Edge Function chain needs a one-time manual Vault-secret
+  bootstrap per environment (documented in
+  `20260925120003_rss_cron.sql`) — until set, scheduled runs show as
+  failures in `cron.job_run_details` (harmless, but not silent).
+- Company child tables (contacts, flags, tags, stage history) stay flat
+  regardless of the parent company's HT-F visibility — a known, documented
+  scope cut from HT-F, not revisited in HT-H.
+
+**Outstanding, unrelated to V2 feature work:** the branch has been diverged
+from `origin/feature/v2-store-rfq-reports` since 2026-09-24 (a teammate's
+genuine fixes on the same branch); per explicit instruction this was left
+unresolved throughout HT-F/G/H rather than merged or force-pushed. All V2
+work above is committed locally, not pushed — resolving the divergence and
+deciding how/when to push is a separate decision for the user, not part of
+this build.

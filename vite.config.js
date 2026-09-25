@@ -12,7 +12,7 @@ export default defineConfig({
     strictPort: false,
   },
   test: {
-    include: ['src/**/*.test.js', 'scripts/**/*.test.js', 'chrome-extension/**/*.test.js'],
+    include: ['src/**/*.test.js', 'scripts/**/*.test.js', 'chrome-extension/**/*.test.js', 'supabase/functions/**/*.test.js'],
     environment: 'node',
   },
 });

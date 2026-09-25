@@ -13,7 +13,7 @@ const ok = (c, l) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${l}`); c ? pass++ :
 const rls = psql(`select c.relname, c.relrowsecurity, c.relforcerowsecurity
   from pg_class c join pg_namespace n on n.oid=c.relnamespace
   where n.nspname='public' and c.relkind='r' order by 1;`).split('\n');
-ok(rls.length === 28, `28 public tables (got ${rls.length})`);
+ok(rls.length === 29, `29 public tables (got ${rls.length})`);
 for (const row of rls) {
   const [t, en, fo] = row.split('\t');
   ok(en === 't' && fo === 't', `${t}: RLS enabled+forced`);
@@ -21,7 +21,7 @@ for (const row of rls) {
 
 // 2. policy count
 const pol = Number(psql(`select count(*) from pg_policies where schemaname='public';`));
-ok(pol === 106, `106 policies (got ${pol})`);
+ok(pol === 110, `110 policies (got ${pol})`);
 
 // 3. seed row counts
 const want = {
@@ -31,7 +31,7 @@ const want = {
   product_categories: 7, service_categories: 6,
   services: 0, company_services: 0, store_item_shares: 0,
   quote_templates: 0, quotes: 0, quote_line_items: 0,
-  rfqs: 0, rfq_items: 0,
+  rfqs: 0, rfq_items: 0, rss_sources: 0,
   profiles: 0, invites: 0, activity_log: 0, company_stage_changes: 0, research_clips: 0,
 };
 for (const [t, n] of Object.entries(want)) {
@@ -71,6 +71,24 @@ for (const t of ['tasks', 'companies']) {
     order by column_name;`).split('\n');
   ok(cols.length === 3, `${t} has owner_id/assigned_to/visibility columns`);
 }
+
+// 8. V2 HT-H: profiles.event_alerts_enabled exists + defaults true; news_items.url
+// has a unique index (idempotent RSS upsert key); the rss-poll cron job is
+// registered and active. This can't prove the Edge Function itself runs
+// end-to-end in this dev environment (no deployed function to invoke), but
+// everything the migration is responsible for is checkable here.
+const alertsCol = psql(`select column_default from information_schema.columns
+  where table_schema='public' and table_name='profiles' and column_name='event_alerts_enabled';`);
+ok(alertsCol.includes('true'), 'profiles.event_alerts_enabled exists, defaults true');
+
+const urlUnique = psql(`select indexdef from pg_indexes where schemaname='public' and tablename='news_items' and indexname='news_items_url_key';`);
+ok(urlUnique.includes('UNIQUE'), 'news_items has a unique index on url (idempotent RSS upsert key)');
+
+const rssPolicies = Number(psql(`select count(*) from pg_policies where schemaname='public' and tablename='rss_sources';`));
+ok(rssPolicies === 4, `rss_sources has 4 policies (got ${rssPolicies})`);
+
+const cronJob = psql(`select active from cron.job where jobname='rss-poll-every-6h';`);
+ok(cronJob === 't', 'rss-poll-every-6h cron job is registered and active');
 
 console.log(`\ndb-check: ${fail === 0 ? 'OK' : 'FAILED'}  (${pass} pass, ${fail} fail)`);
 process.exit(fail === 0 ? 0 : 1);

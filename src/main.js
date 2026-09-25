@@ -15,6 +15,7 @@ import * as tasksApi from './api/tasks.js';
 import * as productsApi from './api/products.js';
 import * as activityApi from './api/activity.js';
 import * as connectorsApi from './api/connectors.js';
+import * as rssSourcesApi from './api/rssSources.js';
 import * as eventsApi from './api/events.js';
 import * as profilesApi from './api/profiles.js';
 import * as categoriesApi from './api/categories.js';
@@ -66,6 +67,7 @@ const ICONS = {
   eyeOff:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><path d="M2.8 2.8l14.4 14.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M8.3 4.3C8.9 4.1 9.4 4 10 4c5.3 0 8.5 6 8.5 6s-.9 1.7-2.5 3.2M5.2 5.9C3 7.4 1.5 10 1.5 10s3.2 6 8.5 6c1 0 1.9-.2 2.7-.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.1 8.1a2.6 2.6 0 0 0 3.6 3.7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
   sun:'<svg viewBox="0 0 20 20" width="15" height="15" fill="none"><circle cx="10" cy="10" r="3.6" stroke="currentColor" stroke-width="1.4"/><path d="M10 1.8v2.1M10 16.1v2.1M18.2 10h-2.1M3.9 10H1.8M15.6 4.4l-1.5 1.5M5.9 14.1l-1.5 1.5M15.6 15.6l-1.5-1.5M5.9 5.9L4.4 4.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
   moon:'<svg viewBox="0 0 20 20" width="15" height="15" fill="none"><path d="M17 11.8A7.5 7.5 0 1 1 8.2 3a6 6 0 0 0 8.8 8.8z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>',
+  bell:'<svg viewBox="0 0 20 20" width="15" height="15" fill="none"><path d="M10 2.5a4 4 0 0 0-4 4v2.3c0 .8-.3 1.6-.9 2.2l-.9.9c-.6.6-.2 1.6.6 1.6h10.4c.8 0 1.2-1 .6-1.6l-.9-.9a3.1 3.1 0 0 1-.9-2.2V6.5a4 4 0 0 0-4-4z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8.2 16.3a1.9 1.9 0 0 0 3.6 0" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
 };
 
 /* ============================================================
@@ -680,6 +682,7 @@ const ui = {
   tickerPaused:false,
   reportCompanyId:null,
   reportSections:{profile:true, pain:true, current:true, recommended:true, contacts:true, notes:false},
+  alertsOpen:false,       // V2 HT-H — event-alert bell dropdown
 };
 
 /* ============================================================
@@ -848,6 +851,15 @@ function daysUntil(iso){
   const d = new Date(iso+'T00:00:00');
   return Math.round((d - new Date(new Date().toDateString()))/86400000);
 }
+// V2 HT-H — client-side event alerts (PRD-v2 §8): "events starting within
+// N days", no Edge Function. 30 days gives enough lead time to actually act
+// (travel/registration), unlike the dashboard's 7-day task reminder.
+const EVENT_ALERT_WINDOW_DAYS = 30;
+function upcomingAlertEvents(){
+  return DATA.events
+    .filter(e=>{ const d = daysUntil(e.startDate); return d !== null && d >= 0 && d <= EVENT_ALERT_WINDOW_DAYS; })
+    .sort((a,b)=>a.startDate.localeCompare(b.startDate));
+}
 function esc(s){
   return String(s==null?'':s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
@@ -994,6 +1006,7 @@ function renderApp(){
           <div class="crumb">${viewCrumb()}</div>
           <h1>${viewTitle()}</h1>
         </div>
+        ${renderAlertBell()}
         <button class="btn btn-ghost" id="refreshAllBtn" title="Re-pull everything from the server (PRD §9 — no realtime, refetch on demand)">${ICONS.refresh||'↻'} Refresh</button>
         ${['companies','contacts','solutions','competitors','research','events'].includes(ui.view) && !(ui.view==='solutions' && ui.storeTab==='dashboard') ? `
         <div class="search-wrap">
@@ -1026,16 +1039,50 @@ function viewCrumb(){
   return ({dashboard:'Pipeline / Overview', companies:'Pipeline / Accounts', contacts:'Pipeline / People', tasks:'Pipeline / Actions', solutions:'Pipeline / Catalog', create:'Pipeline / Quotes', rfqs:'Pipeline / RFQs', insights:'Pipeline / Insights', competitors:'Pipeline / Market Watch', research:'Pipeline / Clips', reports:'Pipeline / Export', events:'Pipeline / Events', settings:'Pipeline / Admin'})[ui.view];
 }
 
+// V2 HT-H — the event-alert bell (PRD-v2 §8). Opted out entirely (no bell
+// shown) when the viewer has disabled it in Settings; the checkbox itself
+// gates the whole feature, not just the badge count.
+function renderAlertBell(){
+  const me = AUTH.profile;
+  if (!me || me.event_alerts_enabled === false) return '';
+  const upcoming = upcomingAlertEvents();
+  return `
+    <div class="alert-bell">
+      <button class="btn btn-ghost" id="alertBellBtn" title="Events starting within ${EVENT_ALERT_WINDOW_DAYS} days">
+        ${ICONS.bell}${upcoming.length ? `<span class="alert-badge">${upcoming.length}</span>` : ''}
+      </button>
+      ${ui.alertsOpen ? `
+      <div class="alert-panel">
+        <div class="row" style="justify-content:space-between;margin-bottom:8px;">
+          <b style="font-size:12.5px;">Events in the next ${EVENT_ALERT_WINDOW_DAYS} days</b>
+          <button class="x" id="alertPanelClose">${ICONS.x}</button>
+        </div>
+        ${upcoming.length===0 ? `<div class="empty" style="padding:10px;">${ICONS.empty}<div>Nothing coming up.</div></div>` :
+          upcoming.map(e=>`
+            <div class="needs-row" data-nav="events">
+              <span class="t">${esc(e.name)}</span>
+              <span class="d">${fmtDate(e.startDate)}</span>
+            </div>
+          `).join('')}
+      </div>` : ''}
+    </div>
+  `;
+}
+
 function bindShell(){
   document.querySelectorAll('[data-nav]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
       const view = btn.dataset.nav;
-      ui.view = view; ui.search = '';
+      ui.view = view; ui.search = ''; ui.alertsOpen = false;
       ui.storeSelected.clear(); ui.storeExpanded.clear();
       renderApp();
       refreshCurrentView(view);   // PRD §9: refetch that view's slice on navigate
     });
   });
+  const alertBellBtn = document.getElementById('alertBellBtn');
+  if (alertBellBtn) alertBellBtn.addEventListener('click', ()=>{ ui.alertsOpen = !ui.alertsOpen; renderApp(); });
+  const alertPanelClose = document.getElementById('alertPanelClose');
+  if (alertPanelClose) alertPanelClose.addEventListener('click', ()=>{ ui.alertsOpen = false; renderApp(); });
   const refreshAllBtn = document.getElementById('refreshAllBtn');
   if (refreshAllBtn) refreshAllBtn.addEventListener('click', doRefreshAll);
   const search = document.getElementById('searchInput');
@@ -3440,6 +3487,10 @@ function renderSettings(){
       </div>
       <div class="field"><label>Full name</label><input id="profName" value="${esc(me.full_name||'')}" placeholder="e.g. Jane Doe"></div>
       <div class="field"><label>Department</label><select id="profDept">${deptOpts}</select></div>
+      <label class="row" style="gap:6px;align-items:center;font-size:12px;margin:2px 0 12px;">
+        <input type="checkbox" id="profAlerts" ${me.event_alerts_enabled!==false?'checked':''}>
+        Notify me about events starting within ${EVENT_ALERT_WINDOW_DAYS} days (bell icon, top bar)
+      </label>
       <button class="btn btn-primary btn-sm" id="saveProfileBtn">Save</button>
     </div>
 
@@ -3551,6 +3602,24 @@ function renderSettings(){
 
     <div class="card panel">
       <div class="row" style="justify-content:space-between;margin-bottom:12px;">
+        <h3 style="margin-bottom:0;">RSS feed sources</h3>
+        ${isAdmin?`<button class="btn btn-sm btn-primary" id="addRssSourceBtn">${ICONS.plus} Add</button>`:''}
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-bottom:10px;">
+        Polled every 6 hours by a scheduled server-side job and merged into the News feed as "live" items — the one place this tool talks to the outside world unattended, so adding a source is admin-only (PRD-v2 §8).
+        ${isAdmin?'':' Only admins can add or remove sources.'}
+      </p>
+      ${DATA.settings.rssSources.map(s=>`
+        <div class="bullet solution" style="align-items:flex-start;">
+          <span style="flex:1;"><b>${esc(s.name)}</b>${s.category?` · ${esc(s.category)}`:''}<br><span style="color:var(--muted);font-size:11px;">${esc(s.url)}</span><br><span style="color:var(--faint);font-size:10.5px;">${s.lastPolledAt?`Last polled ${new Date(s.lastPolledAt).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}`:'Not polled yet'}</span></span>
+          ${isAdmin?`<button class="x" data-del-rss-source="${s.id}">${ICONS.x}</button>`:''}
+        </div>
+      `).join('')}
+      ${DATA.settings.rssSources.length===0?`<div class="empty" style="padding:14px;">${ICONS.empty}<div>No sources added yet.</div></div>`:''}
+    </div>
+
+    <div class="card panel">
+      <div class="row" style="justify-content:space-between;margin-bottom:12px;">
         <h3 style="margin-bottom:0;">Activity log <span style="color:var(--faint);text-transform:none;letter-spacing:0;">— shared, newest first</span></h3>
         <button class="btn btn-sm btn-ghost" id="clearLogBtn">Clear log</button>
       </div>
@@ -3593,6 +3662,7 @@ function bindSettingsControls(){
       const updated = await updateMyProfile({
         fullName: document.getElementById('profName').value,
         department: document.getElementById('profDept').value,
+        eventAlertsEnabled: document.getElementById('profAlerts').checked,
       });
       AUTH.profile = {...AUTH.profile, ...updated}; // merge: updateMyProfile() doesn't return `role`
       const i = SETTINGS.profiles.findIndex(x=>x.id===updated.id);
@@ -3671,6 +3741,18 @@ function bindSettingsControls(){
       DATA.settings.connectors = DATA.settings.connectors.filter(c=>c.id!==id);
       renderView();
     }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+  }));
+  const addRssSourceBtn = document.getElementById('addRssSourceBtn');
+  if (addRssSourceBtn) addRssSourceBtn.addEventListener('click', openAddRssSourceModal);
+  document.querySelectorAll('[data-del-rss-source]').forEach(b=>b.addEventListener('click', ()=>{
+    const id = b.dataset.delRssSource;
+    openConfirmModal('Remove this RSS source? It stops being polled; items it already added to the News feed stay.', async ()=>{
+      try{
+        await rssSourcesApi.remove(id);
+        DATA.settings.rssSources = DATA.settings.rssSources.filter(s=>s.id!==id);
+        renderView(); toast('Source removed');
+      }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+    }, 'Remove');
   }));
   document.getElementById('clearLogBtn').addEventListener('click', ()=>{
     openConfirmModal('Clear the activity log for everyone? This deletes every entry and can’t be undone.', async ()=>{
@@ -3824,6 +3906,35 @@ function openAddConnectorModal(){
         const saved = await connectorsApi.create(connector);
         DATA.settings.connectors.push(saved);
         closeModal(); renderView(); toast('Connector added');
+      }catch(e){ toast('Could not add — ' + (e.message || 'try again')); save.disabled = false; }
+    };
+  });
+}
+
+function openAddRssSourceModal(){
+  openModal(`
+    <h3>Add RSS source</h3>
+    <div class="field"><label>Name</label><input id="mName" placeholder="e.g. Offshore Technology News"></div>
+    <div class="field"><label>Feed URL</label><input id="mUrl" placeholder="https://example.com/feed"></div>
+    <div class="field"><label>Category</label><input id="mCategory" placeholder="e.g. Industry news (optional)"></div>
+    <p style="font-size:11px;color:var(--muted);">Polled every 6 hours by the scheduled server-side job; new items land in the News feed marked "live".</p>
+    <div class="modal-actions">
+      <button class="btn" id="mCancel">Cancel</button>
+      <button class="btn btn-primary" id="mSave">Add</button>
+    </div>
+  `, body=>{
+    body.querySelector('#mCancel').onclick = closeModal;
+    body.querySelector('#mSave').onclick = async ()=>{
+      const name = body.querySelector('#mName').value.trim();
+      const url = normalizeUrlish(body.querySelector('#mUrl').value);
+      if (!name){ toast('Name required'); return; }
+      if (!url){ toast('Feed URL required'); return; }
+      const source = { name, url, category: body.querySelector('#mCategory').value.trim() };
+      const save = body.querySelector('#mSave'); save.disabled = true;
+      try{
+        const saved = await rssSourcesApi.create(source);
+        DATA.settings.rssSources.push(saved);
+        closeModal(); renderView(); toast('Source added');
       }catch(e){ toast('Could not add — ' + (e.message || 'try again')); save.disabled = false; }
     };
   });

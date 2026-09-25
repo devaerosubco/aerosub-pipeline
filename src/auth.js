@@ -73,7 +73,7 @@ export async function myProfile() {
   if (!uid) return null;
   const { data, error } = await supabase
     .from('profiles')
-    .select('id, email, full_name, department, role')
+    .select('id, email, full_name, department, role, event_alerts_enabled')
     .eq('id', uid)
     .maybeSingle();
   if (error) return null;
@@ -97,18 +97,19 @@ export async function amIMember() {
   return data === true;
 }
 
-export async function updateMyProfile({ fullName, department }) {
+export async function updateMyProfile({ fullName, department, eventAlertsEnabled }) {
   const { data: s } = await supabase.auth.getSession();
   const uid = s?.session?.user?.id;
   if (!uid) throw new Error('Not signed in');
   const patch = {};
   if (fullName !== undefined) patch.full_name = String(fullName).trim() || null;
   if (department !== undefined) patch.department = String(department).trim() || null;
+  if (eventAlertsEnabled !== undefined) patch.event_alerts_enabled = !!eventAlertsEnabled;
   const { data, error } = await supabase
     .from('profiles')
     .update(patch)
     .eq('id', uid)
-    .select('id, email, full_name, department')
+    .select('id, email, full_name, department, event_alerts_enabled')
     .single();
   if (error) throw error;
   return data;

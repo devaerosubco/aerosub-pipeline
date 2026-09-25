@@ -123,6 +123,11 @@ export function attendeeFromRow(row) {
 export function connectorFromRow(row) {
   return { id: row.id, name: row.name, type: row.type || '', url: row.url || '', notes: row.notes || '' };
 }
+// RSS feed connector (V2 HT-H) — admin-managed source list the rss-poll
+// Edge Function reads; same shape as connectors.
+export function rssSourceFromRow(row) {
+  return { id: row.id, name: row.name, url: row.url || '', category: row.category || '', lastPolledAt: row.last_polled_at || '' };
+}
 export function activityFromRow(row) {
   return { id: row.id, ts: row.created_at, user: row.actor_name || 'Unattributed', action: row.action, detail: row.detail || '' };
 }
@@ -245,6 +250,9 @@ export function serviceToRow(s) {
 export function connectorToRow(c) {
   return { name: c.name, type: c.type || null, url: c.url || null, notes: c.notes || null };
 }
+export function rssSourceToRow(s) {
+  return { name: s.name, url: s.url, category: s.category || null };
+}
 export function eventToRow(e) {
   return {
     name: e.name, organizer: e.organizer || null, location: e.location || null,
@@ -351,7 +359,7 @@ export async function loadAll() {
   const [
     companies, tasks, productRows, serviceRows, competitors, news, research,
     events, connectorRows, activityLog, appSettings,
-    productCategoryRows, serviceCategoryRows,
+    productCategoryRows, serviceCategoryRows, rssSourceRows,
   ] = await Promise.all([
     fetchCompanies(),
     sel('tasks', '*').then(rows => rows.map(taskFromRow)),
@@ -366,6 +374,7 @@ export async function loadAll() {
     fetchAppSettings(),
     sel('product_categories', '*', { order: { col: 'name', asc: true } }),
     sel('service_categories', '*', { order: { col: 'name', asc: true } }),
+    sel('rss_sources', '*', { order: { col: 'name', asc: true } }),
   ]);
 
   return {
@@ -383,6 +392,7 @@ export async function loadAll() {
       lastNewsRefresh: appSettings.lastNewsRefresh,
       productCategories: productCategoryRows.map(categoryFromRow),
       serviceCategories: serviceCategoryRows.map(categoryFromRow),
+      rssSources: rssSourceRows.map(rssSourceFromRow),
     },
   };
 }

@@ -21,7 +21,7 @@ const ALL_TABLES = [
   'connectors', 'activity_log', 'app_settings',
   'product_categories', 'service_categories', 'services', 'company_services',
   'store_item_shares', 'quote_templates', 'quotes', 'quote_line_items',
-  'rfqs', 'rfq_items',
+  'rfqs', 'rfq_items', 'rss_sources',
 ];
 
 let pass = 0, fail = 0;
@@ -241,6 +241,50 @@ const FLAT = ['companies', 'company_flags', 'contacts', 'products', 'company_pro
   const promoteOther = await memberA.client.from('profiles').update({ role: 'admin' }).eq('id', memberB.uid).select();
   ok((promoteOther.data?.length ?? 0) === 1, "admin can change another member's role");
   await svc.from('profiles').update({ role: 'member' }).eq('id', memberB.uid); // reset
+}
+
+// --- rss_sources (V2 HT-H): same admin-write/member-read shape as the
+// category tables above. memberA is still admin here (the roles block just
+// above only reset memberB back to member, deliberately leaving memberA
+// admin for the rfqs block that follows this one -- don't reset it here).
+{
+  const { error: selErr } = await memberB.client.from('rss_sources').select('*').limit(1);
+  ok(!selErr, 'member can select rss_sources');
+  const insMember = await memberB.client.from('rss_sources').insert({ name: uniq('src'), url: `https://example.com/${uniq('feed')}` });
+  ok(!!insMember.error, 'member CANNOT insert into rss_sources');
+
+  const url = `https://example.com/${uniq('feed')}`;
+  const insAdmin = await memberA.client.from('rss_sources').insert({ name: uniq('src'), url }).select().single();
+  ok(!insAdmin.error, 'admin can insert into rss_sources');
+  const srcId = insAdmin.data?.id;
+  const updAdmin = await memberA.client.from('rss_sources').update({ category: 'Industry news' }).eq('id', srcId);
+  ok(!updAdmin.error, 'admin can update rss_sources');
+  const delAdmin = await memberA.client.from('rss_sources').delete().eq('id', srcId);
+  ok(!delAdmin.error, 'admin can delete rss_sources');
+}
+
+// --- news_items idempotent upsert (V2 HT-H): proves the rss-poll Edge
+// Function's dedupe key actually works at the DB level -- re-"polling" the
+// same url twice (via the same unique-url upsert it uses) must land exactly
+// one row, not two. Doesn't invoke the deployed function itself (nothing to
+// invoke in this dev environment); this is the DB-constraint half of the
+// acceptance criterion, the Edge Function's own parsing/row-building logic
+// is covered by supabase/functions/rss-poll/parse.test.js.
+{
+  const url = `https://example.com/rls-idempotent/${Date.now()}`;
+  const row1 = { id: crypto.randomUUID(), title: 'First poll', source: 'RLS test', url, date: '2026-09-25', live: true };
+  const up1 = await svc.from('news_items').upsert(row1, { onConflict: 'url' });
+  ok(!up1.error, 'first upsert of a new RSS url succeeds');
+
+  const row2 = { id: crypto.randomUUID(), title: 'Second poll (re-fetch, same url)', source: 'RLS test', url, date: '2026-09-25', live: true };
+  const up2 = await svc.from('news_items').upsert(row2, { onConflict: 'url' });
+  ok(!up2.error, 're-upserting the same url on a "re-poll" succeeds (no unique-constraint error)');
+
+  const { data: rows } = await svc.from('news_items').select('id, title').eq('url', url);
+  ok(rows?.length === 1, `re-polling the same url leaves exactly one row (got ${rows?.length})`);
+  ok(rows?.[0]?.title === 'Second poll (re-fetch, same url)', 'the surviving row has the re-poll\'s data (real update, not a no-op)');
+
+  await svc.from('news_items').delete().eq('url', url); // cleanup
 }
 
 // --- rfqs (V2 HT-E): flat read/insert/items, admin-only status/assigned_to -

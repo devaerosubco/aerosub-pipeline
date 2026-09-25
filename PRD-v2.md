@@ -375,23 +375,64 @@ service-role hand-count, plus verified the sector/owner bar totals sum to
 exactly what that member's own RLS-scoped `select` on `tasks` returns
 (12/12) — 13/13 checks green, zero console/page errors.
 
-## 8. Phase 7 — Alerts + RSS feed connector (queued)
+## 8. Phase 7 — Alerts + RSS feed connector (HT-H, shipped)
 
-- **Alerts**, scoped to the existing `events` table per item 7's wording.
-  Given this project's deliberate no-backend/no-Edge-Function stance (V1 PRD
-  §16 S-3 etc.), default to a client-side on-load check ("events starting
-  within N days" + an in-app bell, per-user opt-in in Settings) — zero new
-  infra. A true scheduled push notification would need this project's first
-  Edge Function; note as a fast-follow, don't build by default.
-- **RSS** is exactly V1's already-documented V2 hook (`ROADMAP.md` "Live news /
-  competitor feeds": `news_items.live`, an Edge Function on `pg_cron`).
-  Browser-side RSS fetch doesn't work here — CORS, the same reason the V1
-  README gives for the news feed being curated-only. Scope: an admin-managed
-  `rss_sources` settings module (URL + category, same shape as the existing
-  `connectors` table) + **one** Edge Function on `pg_cron` polling sources and
-  upserting into `news_items`. This is the one place true backend compute is
-  unavoidable — a deliberate, small, explicit exception to "no backend
-  server," not an accidental one.
+The last of the eight items, and the only phase with a real backend-compute
+component. Two independent halves.
+
+**Alerts** — scoped to the existing `events` table per item 7's wording, and
+kept true to this project's deliberate no-backend/no-Edge-Function stance
+(V1 PRD §16 S-3) for this half: a client-side on-load check, no server
+involved. `profiles.event_alerts_enabled boolean not null default true`
+(20260925120001_alerts_profile_pref.sql) is a per-user opt-in stored exactly
+like `full_name`/`department` — no lock-trigger change needed, since
+`lock_profile_identity()` only ever inspects `id`/`email`/`role`. A bell icon
+in the topbar (`renderAlertBell()`, `src/main.js`) shows a badge count of
+`DATA.events` starting within `EVENT_ALERT_WINDOW_DAYS` (30 — chosen over the
+dashboard's 7-day task window because event prep/travel needs more lead
+time), and opens a dropdown listing them; the bell disables itself entirely
+(not just the badge) when the viewer's `event_alerts_enabled` is false. No
+per-item dismiss state — that would need its own table for a "seen" record
+per user per event, out of scope for this pass.
+
+**RSS** is exactly V1's already-documented V2 hook (`ROADMAP.md` "Live news /
+competitor feeds": `news_items.live`, an Edge Function on `pg_cron`).
+Browser-side RSS fetch doesn't work here — CORS, the same reason the V1
+README gives for the news feed being curated-only. Shipped as scoped: an
+admin-managed `rss_sources` table (name/url/category, same shape as
+`connectors`, write-gated to `is_admin()` like the Phase-0 category tables —
+`20260925120002_rss_sources.sql`) + **one** Edge Function,
+`supabase/functions/rss-poll`, on a `pg_cron` schedule
+(`20260925120003_rss_cron.sql`, every 6h via `pg_net`). This is the one
+place true backend compute is unavoidable — a deliberate, small, explicit
+exception to "no backend server," not an accidental one.
+
+Implementation notes:
+- `supabase/functions/rss-poll/parse.js` is a hand-rolled RSS 2.0 + Atom
+  parser (regex-based, no XML-parsing dependency) — the same "avoid an
+  unnecessary parsing library" call `src/csv.js` made for HT-B's bulk
+  upload. It has zero Deno-specific globals, so it's imported and
+  unit-tested directly by vitest (`parse.test.js`, 10 tests) with no Deno
+  runtime involved.
+- The function's entry point is named `index.ts`, not `.js` like every other
+  file in this project — a real, confirmed requirement: an `index.js` in
+  the same folder was silently invisible to `supabase functions serve`
+  (`Functions config: {}`, then a 404 on every invoke) until renamed. No
+  actual TypeScript syntax is used in it.
+- Idempotent re-polling: `news_items` gained a plain unique index on `url`
+  (`news_items_url_key`); the function `.upsert(rows, { onConflict: 'url' })`s
+  every parsed item, so re-fetching the same feed never creates a duplicate
+  row, it just refreshes the existing one. Safe against the curated seed
+  data, since every seeded url is already distinct and a unique btree index
+  never treats two NULLs as equal.
+- The `cron.schedule(...)` job resolves its target URL and service-role
+  Authorization header from two named Vault secrets (`app_project_url`,
+  `app_service_role_key`) rather than a hardcoded value — a migration
+  should never commit a real project URL or key, local or prod. Setting
+  those two secrets is a documented one-time manual step per environment
+  (mirrors the admin-role bootstrap note in `20260917120001_roles.sql`);
+  until set, the cron job's runs show as failures in
+  `cron.job_run_details` but don't affect anything else.
 
 ---
 
