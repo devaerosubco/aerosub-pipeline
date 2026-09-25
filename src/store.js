@@ -153,10 +153,10 @@ export function categoryFromRow(row) {
 
 // Create tab — Quotes/Proforma/Commercials (V2 HT-D).
 export function quoteTemplateFromRow(row) {
-  return { id: row.id, name: row.name, kind: row.kind, filePath: row.file_path, fieldMap: row.field_map || {}, createdAt: row.created_at || '' };
+  return { id: row.id, name: row.name, kind: row.kind, filePath: row.file_path, fieldMap: row.field_map || {}, fileType: row.file_type || 'html', createdAt: row.created_at || '' };
 }
 export function quoteTemplateToRow(t) {
-  return { name: t.name, kind: t.kind || 'Quote', file_path: t.filePath, field_map: t.fieldMap || {} };
+  return { name: t.name, kind: t.kind || 'Quote', file_path: t.filePath, field_map: t.fieldMap || {}, file_type: t.fileType || 'html' };
 }
 export function quoteFromRow(row) {
   return {

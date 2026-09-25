@@ -23,6 +23,10 @@ describe('parseCsv', () => {
   it('ignores a trailing blank line', () => {
     expect(parseCsv('a,b\n1,2\n')).toEqual([['a', 'b'], ['1', '2']]);
   });
+
+  it('strips a leading UTF-8 BOM (Excel\'s "CSV UTF-8" export)', () => {
+    expect(parseCsv('﻿a,b\n1,2')).toEqual([['a', 'b'], ['1', '2']]);
+  });
 });
 
 describe('csvToObjects', () => {

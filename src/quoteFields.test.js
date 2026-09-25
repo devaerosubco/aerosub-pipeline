@@ -40,6 +40,27 @@ describe('buildQuoteFieldValues', () => {
     const values = buildQuoteFieldValues({ quote, lineItems, companyName: '' });
     expect(values.items_table).toContain('Drone Inspection');
   });
+
+  describe('format: "plain" (.docx templates)', () => {
+    it('items_table is one plain line per item, not an HTML table', () => {
+      const values = buildQuoteFieldValues({ quote, lineItems, companyName: 'Seplat', format: 'plain' });
+      expect(values.items_table).not.toContain('<table');
+      expect(values.items_table).toContain('Drone Inspection');
+      expect(values.items_table).toContain('1,300.00');
+    });
+    it('does NOT HTML-escape scalar fields (docx.js XML-escapes at render time instead)', () => {
+      const values = buildQuoteFieldValues({ quote, lineItems, companyName: 'Smith & Sons', format: 'plain' });
+      expect(values.company_name).toBe('Smith & Sons'); // raw — would double-escape if this also HTML-escaped
+    });
+    it('joins multiple line items with \\n (docx.js turns this into a real Word line break)', () => {
+      const twoItems = [
+        { description: 'Item A', qty: 1, unitCost: 100, markupMultiplier: 1 },
+        { description: 'Item B', qty: 2, unitCost: 200, markupMultiplier: 1 },
+      ];
+      const values = buildQuoteFieldValues({ quote, lineItems: twoItems, companyName: '', format: 'plain' });
+      expect(values.items_table.split('\n')).toHaveLength(2);
+    });
+  });
 });
 
 describe('renderTemplate', () => {

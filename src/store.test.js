@@ -320,6 +320,16 @@ describe('quotes (V2 HT-D)', () => {
     expect(back.fieldMap).toEqual(app.fieldMap);
   });
 
+  it('quoteTemplateToRow/FromRow defaults fileType to html, round-trips docx explicitly', () => {
+    const htmlApp = { name: 'HTML tpl', kind: 'Quote', filePath: 'a.html', fieldMap: {} };
+    expect(quoteTemplateToRow(htmlApp).file_type).toBe('html');
+    expect(quoteTemplateFromRow({ id: 't1', ...quoteTemplateToRow(htmlApp) }).fileType).toBe('html');
+
+    const docxApp = { name: 'Word tpl', kind: 'Quote', filePath: 'b.docx', fieldMap: {}, fileType: 'docx' };
+    expect(quoteTemplateToRow(docxApp).file_type).toBe('docx');
+    expect(quoteTemplateFromRow({ id: 't2', ...quoteTemplateToRow(docxApp) }).fileType).toBe('docx');
+  });
+
   it('round-trips a quote through quoteToRow -> quoteFromRow', () => {
     const app = { templateId: 't1', companyId: 'seplat', kind: 'Proforma', quoteNumber: 'Q-001', markupPercent: 25, currency: 'USD', notes: 'n' };
     const row = quoteToRow(app);

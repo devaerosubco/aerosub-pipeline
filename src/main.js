@@ -26,7 +26,8 @@ import * as quotesApi from './api/quotes.js';
 import * as rfqsApi from './api/rfqs.js';
 import * as insightsApi from './api/insights.js';
 import { detectTokens, buildQuoteFieldValues, renderTemplate, buildQuoteMarkdown, computeLineTotals, QUOTE_FIELDS } from './quoteFields.js';
-import { uploadFile, signedUrl, removeFile, downloadText } from './storage.js';
+import { detectDocxTokens, renderDocx } from './docx.js';
+import { uploadFile, signedUrl, removeFile, downloadText, downloadArrayBuffer } from './storage.js';
 import { csvToObjects } from './csv.js';
 import { emailRule, normalizeLinkedin, normalizeUrlish, urlRule, dateRule, validateChanged } from './validate.js';
 
@@ -683,6 +684,8 @@ const ui = {
   reportCompanyId:null,
   reportSections:{profile:true, pain:true, current:true, recommended:true, contacts:true, notes:false},
   alertsOpen:false,       // V2 HT-H — event-alert bell dropdown
+  contactsSort:{col:'name', dir:'asc'},
+  companiesSort:{col:'name', dir:'asc'},
 };
 
 /* ============================================================
@@ -732,16 +735,22 @@ function reloadCreateData(){ CREATE_DATA.loaded = false; loadCreateData(); }
 
 // The open quote's line items + its template's raw file text (for live
 // preview) — loaded per-quote, on demand, mirroring ITEM_SHARE's pattern.
-const QUOTE_EDITOR = { quoteId: null, lineItems: [], templateText: '', loaded: false, loading: false };
+// templateText: the .html template body (string), used for .html templates.
+// templateBuffer: the raw .docx bytes (ArrayBuffer), used for .docx ones —
+// docx.js needs the original zip, not a decoded string.
+const QUOTE_EDITOR = { quoteId: null, lineItems: [], templateText: '', templateBuffer: null, loaded: false, loading: false };
 function loadQuoteEditor(quote){
   if (QUOTE_EDITOR.loading) return;
   QUOTE_EDITOR.loading = true;
   const tpl = quoteTemplateById(quote.templateId);
+  const isDocx = tpl && tpl.fileType === 'docx';
   Promise.all([
     quotesApi.listLineItems(quote.id),
-    tpl ? downloadText(tpl.filePath).catch(()=>'') : Promise.resolve(''),
-  ]).then(([lineItems, templateText])=>{
-    QUOTE_EDITOR.quoteId = quote.id; QUOTE_EDITOR.lineItems = lineItems; QUOTE_EDITOR.templateText = templateText; QUOTE_EDITOR.loaded = true;
+    !tpl ? Promise.resolve('') : isDocx ? Promise.resolve('') : downloadText(tpl.filePath).catch(()=>''),
+    !tpl ? Promise.resolve(null) : isDocx ? downloadArrayBuffer(tpl.filePath).catch(()=>null) : Promise.resolve(null),
+  ]).then(([lineItems, templateText, templateBuffer])=>{
+    QUOTE_EDITOR.quoteId = quote.id; QUOTE_EDITOR.lineItems = lineItems;
+    QUOTE_EDITOR.templateText = templateText; QUOTE_EDITOR.templateBuffer = templateBuffer; QUOTE_EDITOR.loaded = true;
   }).catch(()=>{})
     .finally(()=>{ QUOTE_EDITOR.loading = false; if (ui.drawerQuoteId===quote.id) renderQuoteDrawer(); });
 }
@@ -864,6 +873,42 @@ function esc(s){
   return String(s==null?'':s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
 
+// Sortable-table columns (Contacts, Companies table view). `valueFn(row)`
+// returns a string/number/boolean; null/undefined sort last regardless of
+// direction, so an empty follow-up date etc. never jumps to the top on
+// desc. Shared by both tables rather than duplicated — same reasoning as
+// TEAM_ROSTER/searchCatalogItems being extracted after a 2nd duplicate.
+function sortRows(rows, sortState, valueFn){
+  const { col, dir } = sortState;
+  const mul = dir === 'desc' ? -1 : 1;
+  return [...rows].sort((a, b) => {
+    const va = valueFn(a, col), vb = valueFn(b, col);
+    const aNull = va === null || va === undefined || va === '';
+    const bNull = vb === null || vb === undefined || vb === '';
+    if (aNull && bNull) return 0;
+    if (aNull) return 1;   // nulls always last, independent of dir
+    if (bNull) return -1;
+    if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * mul;
+    return String(va).localeCompare(String(vb)) * mul;
+  });
+}
+// A clickable <th>: same column clicked again flips direction; a new
+// column starts at asc. `label` is escaped by the caller already (these are
+// static header strings, not user data).
+function sortTh(sortState, col, label){
+  const active = sortState.col === col;
+  const arrow = active ? (sortState.dir==='asc' ? ' ↑' : ' ↓') : '';
+  return `<th data-sort-col="${col}" class="sortable${active?' active':''}">${label}${arrow}</th>`;
+}
+function bindSortHeaders(sortState, onChange){
+  document.querySelectorAll('[data-sort-col]').forEach(th=>th.addEventListener('click', ()=>{
+    const col = th.dataset.sortCol;
+    if (sortState.col === col) sortState.dir = sortState.dir==='asc' ? 'desc' : 'asc';
+    else { sortState.col = col; sortState.dir = 'asc'; }
+    onChange();
+  }));
+}
+
 /* ============================================================
    THEME — light/dark toggle. The prototype already had CSS
    variables for both (:root = light, prefers-color-scheme: dark
@@ -935,6 +980,14 @@ function stripProto(url){
   return s;
 }
 function companyById(id){ return DATA.companies.find(c=>c.id===id); }
+// Case-insensitive, trimmed — used by the contacts bulk-upload flow to
+// decide "does this company already exist" without forcing an exact-case
+// match against however the CSV happened to capitalize it.
+function companyByName(name){
+  const q = (name||'').trim().toLowerCase();
+  if (!q) return null;
+  return DATA.companies.find(c=>c.name.trim().toLowerCase()===q);
+}
 function solutionById(id){ return DATA.solutions.find(s=>s.id===id); }
 function serviceById(id){ return DATA.services.find(s=>s.id===id); }
 function initials(name){
@@ -1013,8 +1066,8 @@ function renderApp(){
           ${ICONS.search}
           <input id="searchInput" placeholder="Search ${ui.view==='solutions'?ui.storeTab:ui.view}…" value="${esc(ui.search)}">
         </div>` : '<div style="margin-left:auto"></div>'}
-        ${ui.view==='companies' ? `<button class="btn btn-primary" id="addCompanyBtn">${ICONS.plus} Account</button>`:''}
-        ${ui.view==='contacts' ? `<button class="btn btn-primary" id="addContactBtn">${ICONS.plus} Contact</button>`:''}
+        ${ui.view==='companies' ? `<button class="btn btn-ghost" id="bulkUploadCompaniesBtn">${ICONS.upload} Bulk upload</button><button class="btn btn-primary" id="addCompanyBtn">${ICONS.plus} Account</button>`:''}
+        ${ui.view==='contacts' ? `<button class="btn btn-ghost" id="bulkUploadContactsBtn">${ICONS.upload} Bulk upload</button><button class="btn btn-primary" id="addContactBtn">${ICONS.plus} Contact</button>`:''}
         ${ui.view==='tasks' ? `<button class="btn btn-primary" id="addTaskBtn">${ICONS.plus} Task</button>`:''}
         ${ui.view==='solutions' && ui.storeTab!=='dashboard' ? `<button class="btn btn-ghost" id="bulkUploadStoreBtn">${ICONS.upload} Bulk upload</button><button class="btn btn-primary" id="addSolutionBtn">${ICONS.plus} ${ui.storeTab==='services'?'Service':'Product'}</button>`:''}
         ${ui.view==='competitors' ? `<button class="btn btn-primary" id="addCompetitorBtn">${ICONS.plus} Competitor</button>`:''}
@@ -1099,8 +1152,12 @@ function bindShell(){
 
   const addCompanyBtn = document.getElementById('addCompanyBtn');
   if (addCompanyBtn) addCompanyBtn.addEventListener('click', openAddCompanyModal);
+  const bulkUploadCompaniesBtn = document.getElementById('bulkUploadCompaniesBtn');
+  if (bulkUploadCompaniesBtn) bulkUploadCompaniesBtn.addEventListener('click', openBulkUploadCompaniesModal);
   const addContactBtn = document.getElementById('addContactBtn');
   if (addContactBtn) addContactBtn.addEventListener('click', ()=>openAddContactModal(null));
+  const bulkUploadContactsBtn = document.getElementById('bulkUploadContactsBtn');
+  if (bulkUploadContactsBtn) bulkUploadContactsBtn.addEventListener('click', openBulkUploadContactsModal);
   const addTaskBtn = document.getElementById('addTaskBtn');
   if (addTaskBtn) addTaskBtn.addEventListener('click', ()=>openAddTaskModal(null));
   const addSolutionBtn = document.getElementById('addSolutionBtn');
@@ -1482,14 +1539,35 @@ function renderKCard(c){
   `;
 }
 
+const PRIORITY_RANK = { high: 3, medium: 2, low: 1 };
+function companySortValue(c, col){
+  switch(col){
+    case 'name': return c.name.toLowerCase();
+    case 'type': return (c.type||'').toLowerCase();
+    case 'stage': return stageOf(c.stage).label.toLowerCase();
+    case 'priority': return PRIORITY_RANK[c.priority] || 0;
+    case 'gaps': return c.painPoints.length;
+    case 'contacts': return c.contacts.length;
+    default: return null;
+  }
+}
 function renderCompanyTable(list){
   if (!list.length) return `<div class="empty">${ICONS.empty}<div>No accounts match.</div></div>`;
+  const rows = sortRows(list, ui.companiesSort, companySortValue);
   return `
   <div class="card tablewrap">
     <table>
-      <thead><tr><th>Account</th><th>Type</th><th>Stage</th><th>Priority</th><th>Gaps</th><th>Contacts</th><th>Flag</th></tr></thead>
+      <thead><tr>
+        ${sortTh(ui.companiesSort,'name','Account')}
+        ${sortTh(ui.companiesSort,'type','Type')}
+        ${sortTh(ui.companiesSort,'stage','Stage')}
+        ${sortTh(ui.companiesSort,'priority','Priority')}
+        ${sortTh(ui.companiesSort,'gaps','Gaps')}
+        ${sortTh(ui.companiesSort,'contacts','Contacts')}
+        <th>Flag</th>
+      </tr></thead>
       <tbody>
-        ${list.map(c=>`
+        ${rows.map(c=>`
           <tr data-open-company="${c.id}">
             <td class="name-cell">${esc(c.name)}${c.visibility==='personal'?` <span class="chip chip-low" style="font-size:9px;">Personal</span>`:''}</td>
             <td>${esc(c.type)}</td>
@@ -1513,6 +1591,7 @@ function bindCompaniesControls(){
   const fs = document.getElementById('filterStage');
   if (fs) fs.addEventListener('change', e=>{ ui.companyFilter.stage=e.target.value; renderView(); });
 
+  bindSortHeaders(ui.companiesSort, renderView);
   document.querySelectorAll('[data-open-company]').forEach(el=>{
     el.addEventListener('click', ()=>{ const id=el.dataset.openCompany; if(id) openDrawer(id); });
   });
@@ -4251,12 +4330,37 @@ function filteredContacts(){
     return ct.name.toLowerCase().includes(q) || ct.pos.toLowerCase().includes(q) || (co && co.name.toLowerCase().includes(q));
   });
 }
+// Click-to-sort (any column); defaults to the old fixed order (verified
+// first, then name) until the user picks a column.
+function contactSortValue(ct, col){
+  switch(col){
+    case 'name': return ct.name.toLowerCase();
+    case 'company': return (companyById(ct.companyId)?.name || '').toLowerCase();
+    case 'position': return (ct.pos||'').toLowerCase();
+    case 'email': return (ct.email||'').toLowerCase();
+    case 'phone': return (ct.phone||'').toLowerCase();
+    case 'linkedin': return ct.linkedin ? 1 : 0;
+    case 'followup': return ct.nextFollowUp || null;
+    default: return null;
+  }
+}
 function renderContacts(){
-  const rows = filteredContacts().sort((a,b)=> (b.verified-a.verified) || a.name.localeCompare(b.name));
+  const base = filteredContacts();
+  const rows = ui.contactsSort.col === 'name' && ui.contactsSort.dir === 'asc'
+    ? [...base].sort((a,b)=> (b.verified-a.verified) || a.name.localeCompare(b.name)) // default view: verified first
+    : sortRows(base, ui.contactsSort, contactSortValue);
   return `
   <div class="card tablewrap">
     <table>
-      <thead><tr><th>Name</th><th>Company</th><th>Position</th><th>Email</th><th>Phone</th><th>LinkedIn</th><th>Follow-up</th></tr></thead>
+      <thead><tr>
+        ${sortTh(ui.contactsSort,'name','Name')}
+        ${sortTh(ui.contactsSort,'company','Company')}
+        ${sortTh(ui.contactsSort,'position','Position')}
+        ${sortTh(ui.contactsSort,'email','Email')}
+        ${sortTh(ui.contactsSort,'phone','Phone')}
+        ${sortTh(ui.contactsSort,'linkedin','LinkedIn')}
+        ${sortTh(ui.contactsSort,'followup','Follow-up')}
+      </tr></thead>
       <tbody>
       ${rows.map(ct=>{
         const co = companyById(ct.companyId);
@@ -4279,6 +4383,7 @@ function bindContactsControls(){
   document.querySelectorAll('[data-open-contact]').forEach(row=>{
     row.addEventListener('click', ()=>openEditContactModal(row.dataset.openContact));
   });
+  bindSortHeaders(ui.contactsSort, renderView);
 }
 
 /* ============================================================
@@ -4770,24 +4875,27 @@ function openUploadTemplateModal(){
   openModal(`
     <h3>Upload template</h3>
     <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">
-      .html only for now. Use <code>{{token}}</code> placeholders anywhere in the file — you'll map each one below.
+      .html or .docx. Use <code>{{token}}</code> placeholders anywhere in the file — you'll map each one below.
+      .docx line items render as one plain line per item, not a real Word table — a real table needs a heavier templating model this app doesn't use.
     </p>
     <div class="field"><label>Name</label><input id="mName" placeholder="e.g. Standard Quote"></div>
     <div class="field"><label>Type</label><select id="mKind"><option>Quote</option><option>Proforma</option><option>Commercial</option></select></div>
-    <div class="field"><label>Template file (.html)</label><input type="file" id="mFile" accept=".html,text/html"></div>
+    <div class="field"><label>Template file (.html or .docx)</label><input type="file" id="mFile" accept=".html,text/html,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"></div>
     <div id="mMapArea"></div>
     <div class="modal-actions">
       <button class="btn" id="mCancel">Cancel</button>
       <button class="btn btn-primary" id="mSave" disabled>Save template</button>
     </div>
   `, body=>{
-    let rawText = ''; let tokens = [];
+    let tokens = []; let fileType = 'html';
     body.querySelector('#mCancel').onclick = closeModal;
     const saveBtn = body.querySelector('#mSave');
     body.querySelector('#mFile').addEventListener('change', async e=>{
       const file = e.target.files[0]; if (!file) return;
-      rawText = await file.text();
-      tokens = detectTokens(rawText);
+      fileType = file.name.toLowerCase().endsWith('.docx') ? 'docx' : 'html';
+      try{
+        tokens = fileType === 'docx' ? detectDocxTokens(await file.arrayBuffer()) : detectTokens(await file.text());
+      }catch(err){ toast('Could not read that file — ' + (err.message || 'is it a valid ' + fileType + '?')); return; }
       body.querySelector('#mMapArea').innerHTML = tokenMapRowsHtml(tokens, {});
       saveBtn.disabled = false;
     });
@@ -4800,7 +4908,7 @@ function openUploadTemplateModal(){
       try{
         const path = await uploadFile(file, 'quote-templates');
         const fieldMap = readTokenMap(body, tokens);
-        const saved = await quoteTemplatesApi.create({ name, kind: body.querySelector('#mKind').value, filePath: path, fieldMap });
+        const saved = await quoteTemplatesApi.create({ name, kind: body.querySelector('#mKind').value, filePath: path, fieldMap, fileType });
         CREATE_DATA.templates.unshift(saved);
         closeModal(); renderApp(); toast('Template saved');
       }catch(e){ toast('Could not save — ' + (e.message || 'try again')); saveBtn.disabled = false; }
@@ -4823,8 +4931,11 @@ function openManageTemplateModal(id){
   `, body=>{
     let tokens = [];
     body.querySelector('#mCancel').onclick = closeModal;
-    downloadText(t.filePath).then(rawText=>{
-      tokens = detectTokens(rawText);
+    const detect = t.fileType==='docx'
+      ? downloadArrayBuffer(t.filePath).then(buf=>detectDocxTokens(buf))
+      : downloadText(t.filePath).then(rawText=>detectTokens(rawText));
+    detect.then(found=>{
+      tokens = found;
       body.querySelector('#mMapArea').innerHTML = tokenMapRowsHtml(tokens, t.fieldMap||{});
     }).catch(()=>{
       body.querySelector('#mMapArea').innerHTML = `<p class="sub">Could not load the template file to re-map it — you can still rename or delete.</p>`;
@@ -4895,7 +5006,11 @@ function openAddQuoteModal(){
 
 function updateQuotePreview(q, tpl){
   const frame = document.getElementById('quotePreview');
-  if (!frame || !tpl || !(QUOTE_EDITOR.loaded && QUOTE_EDITOR.quoteId===q.id)) return;
+  // No live preview for .docx — an iframe can't render a Word file, and
+  // building one would mean either shipping a docx-to-HTML converter (a
+  // much bigger addition) or a fake approximation that could mislead. The
+  // export itself is exact; .docx users just don't get the live iframe.
+  if (!frame || !tpl || tpl.fileType==='docx' || !(QUOTE_EDITOR.loaded && QUOTE_EDITOR.quoteId===q.id)) return;
   const co = companyById(q.companyId);
   const fieldValues = buildQuoteFieldValues({ quote: q, lineItems: QUOTE_EDITOR.lineItems, companyName: co?co.name:'', preparedBy: currentUserName() });
   frame.srcdoc = renderTemplate(QUOTE_EDITOR.templateText, tpl.fieldMap, fieldValues);
@@ -4960,7 +5075,15 @@ function renderQuoteDrawer(){
         <div class="sub" style="margin-top:10px;text-align:right;font-size:14px;"><b>Total: ${esc(q.currency)} ${fmt(subtotal)}</b></div>
       </div>
 
-      ${tpl ? `
+      ${tpl && tpl.fileType==='docx' ? `
+      <div class="dsec">
+        <div class="dsec-head"><h4>Preview & export</h4></div>
+        <p style="font-size:11.5px;color:var(--muted);">No live preview for .docx templates — export and open in Word to check the result. Line items render as one plain line per item, not a bordered table.</p>
+        <div class="small-btn-row" style="margin-top:10px;">
+          <button class="btn btn-sm" id="exportQuoteDocxBtn">Export .docx</button>
+          <button class="btn btn-sm btn-ghost" id="exportQuoteMdBtn">Export .md</button>
+        </div>
+      </div>` : tpl ? `
       <div class="dsec">
         <div class="dsec-head"><h4>Preview & export</h4></div>
         <div class="report-preview-wrap" style="height:360px;">
@@ -5078,6 +5201,20 @@ function bindQuoteDrawer(q, tpl){
     const co = companyById(q.companyId);
     const md = buildQuoteMarkdown({ quote: q, lineItems: QUOTE_EDITOR.lineItems, companyName: co?co.name:'' });
     downloadFile(`${q.kind.toLowerCase()}-${q.quoteNumber || q.id.slice(0,8)}.md`, md, 'text/markdown');
+  });
+  const exportDocxBtn = document.getElementById('exportQuoteDocxBtn');
+  if (exportDocxBtn) exportDocxBtn.addEventListener('click', ()=>{
+    if (!QUOTE_EDITOR.templateBuffer){ toast('Template file not loaded — try reopening this quote'); return; }
+    const co = companyById(q.companyId);
+    const fieldValues = buildQuoteFieldValues({ quote: q, lineItems: QUOTE_EDITOR.lineItems, companyName: co?co.name:'', preparedBy: currentUserName(), format: 'plain' });
+    let bytes;
+    try{ bytes = renderDocx(QUOTE_EDITOR.templateBuffer, tpl.fieldMap, fieldValues); }
+    catch(e){ toast('Could not render .docx — ' + (e.message || 'try again')); return; }
+    downloadFile(
+      `${q.kind.toLowerCase()}-${q.quoteNumber || q.id.slice(0,8)}.docx`, bytes,
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    );
+    logActivity(`Exported a ${q.kind.toLowerCase()}`, q.quoteNumber || q.id);
   });
 }
 
@@ -5618,6 +5755,177 @@ function openAddContactModal(companyId){
         if (ui.drawerCompanyId===co.id) openDrawer(co.id);
         toast('Contact added');
       }catch(e){ toast('Could not add contact — ' + (e.message || 'try again')); save.disabled = false; }
+    };
+  });
+}
+
+// CSV bulk upload — Companies (addendum item, mirrors Store's
+// openBulkUploadModal exactly: CSV only, same reason as src/csv.js's own
+// header comment — no xlsx dependency. Export Excel as .csv first).
+function openBulkUploadCompaniesModal(){
+  openModal(`
+    <h3>Bulk upload accounts</h3>
+    <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">
+      CSV only — export/save your Excel sheet as .csv first. Header row required: <code>name</code>.
+      Optional: <code>type, sector, priority, stage, summary</code>.
+      priority: high/medium/low (default medium). stage: ${STAGES.map(s=>s.id).join('/')} (default research).
+      Every row starts <b>personal</b> to you, same as adding one by hand — share to General afterwards if needed.
+    </p>
+    <div class="field"><input type="file" id="mFile" accept=".csv,text/csv"></div>
+    <div id="mPreview"></div>
+    <div class="modal-actions">
+      <button class="btn" id="mCancel">Cancel</button>
+      <button class="btn btn-primary" id="mSave" disabled>Import 0 rows</button>
+    </div>
+  `, body=>{
+    let parsed = [];
+    body.querySelector('#mCancel').onclick = closeModal;
+    const saveBtn = body.querySelector('#mSave');
+    const preview = body.querySelector('#mPreview');
+
+    body.querySelector('#mFile').addEventListener('change', async e=>{
+      const file = e.target.files[0]; if (!file) return;
+      const rows = csvToObjects(await file.text());
+      parsed = rows.map(r=>{
+        const name = (r.name||'').trim();
+        const errors = [];
+        if (!name) errors.push('missing name');
+        const priorityRaw = (r.priority||'').trim().toLowerCase();
+        const priority = priorityRaw ? priorityRaw : 'medium';
+        if (priorityRaw && !PRIORITIES.includes(priorityRaw)) errors.push(`invalid priority "${r.priority}"`);
+        const stageRaw = (r.stage||'').trim().toLowerCase();
+        const stage = stageRaw ? stageRaw : 'research';
+        if (stageRaw && !STAGES.some(s=>s.id===stageRaw)) errors.push(`invalid stage "${r.stage}"`);
+        return {
+          name, type: (r.type||'').trim(), sector: (r.sector||'').trim(),
+          priority, stage, summary: (r.summary||'').trim(),
+          painPoints: [], currentSolutions: [], errors,
+        };
+      });
+      const valid = parsed.filter(r=>r.errors.length===0);
+      saveBtn.disabled = valid.length===0;
+      saveBtn.textContent = `Import ${valid.length} row${valid.length===1?'':'s'}`;
+      preview.innerHTML = `
+        <div class="tablewrap" style="max-height:240px;overflow-y:auto;margin-top:10px;">
+          <table>
+            <thead><tr><th>Name</th><th>Type</th><th>Priority</th><th>Stage</th><th>Status</th></tr></thead>
+            <tbody>
+              ${parsed.map(r=>`<tr>
+                <td>${esc(r.name||'—')}</td>
+                <td>${esc(r.type||'—')}</td>
+                <td>${esc(r.priority)}</td>
+                <td>${esc(r.stage)}</td>
+                <td>${r.errors.length ? `<span class="chip chip-high">${esc(r.errors.join('; '))}</span>` : `<span class="chip chip-good">ok</span>`}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div class="sub" style="margin-top:6px;">${parsed.length} row${parsed.length===1?'':'s'} parsed, ${valid.length} valid.</div>
+      `;
+    });
+
+    saveBtn.onclick = async ()=>{
+      const valid = parsed.filter(r=>r.errors.length===0).map(({errors, ...r})=>r);
+      if (!valid.length) return;
+      saveBtn.disabled = true;
+      try{
+        const saved = await companiesApi.bulkCreate(valid);
+        DATA.companies.push(...saved);
+        logActivity('Bulk-uploaded accounts', `${saved.length} accounts`);
+        closeModal(); renderApp(); toast(`${saved.length} accounts imported`);
+      }catch(e){ toast('Could not import — ' + (e.message || 'try again')); saveBtn.disabled = false; }
+    };
+  });
+}
+
+// CSV bulk upload — Contacts. Unlike Store/Companies bulk upload, an
+// unresolved reference here (an unknown company name) doesn't reject the
+// row — it auto-creates that company (personal to the uploader, same as
+// every other new company) rather than forcing a two-step "upload
+// companies first, then contacts" workflow. Duplicate company names within
+// one CSV are deduped to a single created company, not one per row.
+function openBulkUploadContactsModal(){
+  openModal(`
+    <h3>Bulk upload contacts</h3>
+    <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">
+      CSV only — export/save your Excel sheet as .csv first. Header row required: <code>company, name</code>.
+      Optional: <code>position, email, phone, linkedin</code>.
+      A company name that doesn't already exist is created automatically (personal to you, same as adding one by hand).
+    </p>
+    <div class="field"><input type="file" id="mFile" accept=".csv,text/csv"></div>
+    <div id="mPreview"></div>
+    <div class="modal-actions">
+      <button class="btn" id="mCancel">Cancel</button>
+      <button class="btn btn-primary" id="mSave" disabled>Import 0 rows</button>
+    </div>
+  `, body=>{
+    let parsed = [];
+    body.querySelector('#mCancel').onclick = closeModal;
+    const saveBtn = body.querySelector('#mSave');
+    const preview = body.querySelector('#mPreview');
+
+    body.querySelector('#mFile').addEventListener('change', async e=>{
+      const file = e.target.files[0]; if (!file) return;
+      const rows = csvToObjects(await file.text());
+      parsed = rows.map(r=>{
+        const companyName = (r.company||'').trim();
+        const name = (r.name||'').trim();
+        const errors = [];
+        if (!companyName) errors.push('missing company');
+        if (!name) errors.push('missing name');
+        const existing = companyByName(companyName);
+        return {
+          companyName, willCreateCompany: !!companyName && !existing,
+          name, pos: (r.position||r.job_title||'').trim(),
+          email: (r.email||'').trim(), phone: (r.phone||'').trim(),
+          linkedin: normalizeLinkedin(r.linkedin||''),
+          verified: false, lastContact: '', nextFollowUp: '', errors,
+        };
+      });
+      const valid = parsed.filter(r=>r.errors.length===0);
+      const newCompanies = new Set(valid.filter(r=>r.willCreateCompany).map(r=>r.companyName.toLowerCase()));
+      saveBtn.disabled = valid.length===0;
+      saveBtn.textContent = `Import ${valid.length} row${valid.length===1?'':'s'}`;
+      preview.innerHTML = `
+        <div class="tablewrap" style="max-height:240px;overflow-y:auto;margin-top:10px;">
+          <table>
+            <thead><tr><th>Company</th><th>Name</th><th>Position</th><th>Email</th><th>Status</th></tr></thead>
+            <tbody>
+              ${parsed.map(r=>`<tr>
+                <td>${esc(r.companyName||'—')}${r.willCreateCompany?` <span class="chip chip-teal" style="font-size:9px;">new</span>`:''}</td>
+                <td>${esc(r.name||'—')}</td>
+                <td>${esc(r.pos||'—')}</td>
+                <td>${esc(r.email||'—')}</td>
+                <td>${r.errors.length ? `<span class="chip chip-high">${esc(r.errors.join('; '))}</span>` : `<span class="chip chip-good">ok</span>`}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div class="sub" style="margin-top:6px;">${parsed.length} row${parsed.length===1?'':'s'} parsed, ${valid.length} valid, ${newCompanies.size} new account${newCompanies.size===1?'':'s'} will be created.</div>
+      `;
+    });
+
+    saveBtn.onclick = async ()=>{
+      const valid = parsed.filter(r=>r.errors.length===0);
+      if (!valid.length) return;
+      saveBtn.disabled = true;
+      try{
+        // One company per distinct name, not one per contact row.
+        const toCreate = [...new Map(valid.filter(r=>r.willCreateCompany).map(r=>[r.companyName.toLowerCase(), r.companyName])).values()];
+        const createdCompanies = toCreate.length
+          ? await companiesApi.bulkCreate(toCreate.map(name=>({ name, type:'', sector:'', priority:'medium', stage:'research', summary:'', painPoints:[], currentSolutions:[] })))
+          : [];
+        DATA.companies.push(...createdCompanies);
+
+        const contactRows = valid.map(({errors, willCreateCompany, companyName, ...r})=>{
+          const co = companyByName(companyName);
+          return { ...r, companyId: co ? co.id : '' };
+        }).filter(r=>r.companyId);
+        const saved = await contactsApi.bulkCreate(contactRows);
+        saved.forEach(ct=>{ const co = companyById(ct.companyId); if (co) co.contacts.push(ct); });
+        logActivity('Bulk-uploaded contacts', `${saved.length} contacts, ${createdCompanies.length} new accounts`);
+        closeModal(); renderApp(); toast(`${saved.length} contacts imported`);
+      }catch(e){ toast('Could not import — ' + (e.message || 'try again')); saveBtn.disabled = false; }
     };
   });
 }

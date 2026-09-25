@@ -9,6 +9,12 @@
 // to Save As / Export as CSV from Excel or Google Sheets first — one click
 // on their end, zero new attack surface or bundle weight on ours.
 export function parseCsv(text) {
+  // Excel's "CSV UTF-8" export (and Windows tools in general) prepend a
+  // byte-order-mark — left in place, it sticks to the first header cell
+  // ("﻿company" != "company") and silently breaks that one column's
+  // matching for every row. Real-world fix, hit while testing this against
+  // an actual exported file, not a hypothetical.
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
   const rows = [];
   let row = [], field = '', inQuotes = false;
   const pushField = () => { row.push(field); field = ''; };

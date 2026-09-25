@@ -9,6 +9,15 @@ export async function create(companyId, ct) {
   return contactFromRow(saved);
 }
 
+// CSV bulk upload. Each row already carries its own companyId (the caller
+// resolves/creates companies by name first — contacts.company_id is not
+// null, so every row needs one before this runs).
+export async function bulkCreate(rows) {
+  const payload = rows.map(r => ({ id: crypto.randomUUID(), company_id: r.companyId, ...contactToRow(r) }));
+  const saved = await write('contacts', 'insert', { row: payload }, { many: true });
+  return saved.map(contactFromRow);
+}
+
 // `patch` uses the app-shape field names (pos/nextFollowUp/…) — only the
 // keys present are written (PRD §8.3.1, "changed fields only"), so a save
 // that only touched the phone number never blanks out name/position/etc.

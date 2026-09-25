@@ -90,5 +90,11 @@ ok(rssPolicies === 4, `rss_sources has 4 policies (got ${rssPolicies})`);
 const cronJob = psql(`select active from cron.job where jobname='rss-poll-every-6h';`);
 ok(cronJob === 't', 'rss-poll-every-6h cron job is registered and active');
 
+// 9. Addendum item 2: quote_templates.file_type exists, defaults 'html'
+// (existing .html-only templates never had to set it explicitly).
+const fileTypeCol = psql(`select column_default from information_schema.columns
+  where table_schema='public' and table_name='quote_templates' and column_name='file_type';`);
+ok(fileTypeCol.includes('html'), "quote_templates.file_type exists, defaults 'html'");
+
 console.log(`\ndb-check: ${fail === 0 ? 'OK' : 'FAILED'}  (${pass} pass, ${fail} fail)`);
 process.exit(fail === 0 ? 0 : 1);

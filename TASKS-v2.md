@@ -582,8 +582,21 @@ scoped tightly and documented as a deliberate exception.
 **Deliberately cut / deferred:**
 - Public, no-login share links (§0/§2) — members-only sharing shipped
   instead.
-- `.docx` quote templates (§4) — only `.html` templates shipped; `.docx`
-  via docxtemplater/pizzip was flagged as a fast-follow, never attempted.
+- ~~`.docx` quote templates (§4)~~ — **built 2026-09-25** (addendum, not a
+  new Heavy Task). `src/docx.js`: pizzip only, not docxtemplater — a plain
+  {{token}} text-replace on `word/document.xml` gets the same practical
+  fidelity as docxtemplater's own default tag mode, for one fewer
+  dependency and the same token syntax the .html path already uses. Line
+  items render as one plain line per item, not a real Word table (a real
+  table needs docxtemplater-style loop tags authored into the template
+  itself — a heavier model this app doesn't use elsewhere). No live iframe
+  preview for .docx (can't render Word in an iframe); export is exact.
+  Verified: 8 unit tests (`docx.test.js`, a PizZip-built fake .docx, no
+  real Word file needed) + 3 more in `quoteFields.test.js` for the 'plain'
+  format branch, plus a real-browser pass that uploaded a generated .docx,
+  mapped its tokens, created a quote, exported, and re-opened the
+  downloaded file with pizzip to confirm the substitution actually landed
+  (no leftover `{{tokens}}`, real values present).
 - True scheduled push notifications (§8) — the event-alert bell is
   client-side, on-load only; a push channel would need a second Edge
   Function, not built.
@@ -594,6 +607,33 @@ scoped tightly and documented as a deliberate exception.
   sector/owner panels only reflect what the viewer can see under HT-F's
   visibility rules; a `SECURITY DEFINER` RPC would remove that caveat but
   wasn't built.
+
+**Addendum, 2026-09-25 (not part of the original 8-item request) — CSV bulk
+upload + column sorting for Companies and Contacts.** User-requested "quick
+fix" after HT-H shipped. `openBulkUploadCompaniesModal`/
+`openBulkUploadContactsModal` mirror the Store bulk-upload modal exactly
+(CSV only, same reasoning as `src/csv.js`'s own header comment — no `xlsx`
+dependency). Companies: `name` required, `type`/`sector`/`priority`/`stage`/
+`summary` optional, invalid `priority`/`stage` values reject that row
+without blocking the rest of the file. Contacts: `company`/`name` required;
+an unrecognized company name is auto-created (personal to the uploader,
+same as adding one by hand) rather than rejecting the row — deduped so one
+company name repeated across many contact rows creates exactly one company,
+not one per row. Both tables (Contacts' fixed list, Companies' table
+layout) gained click-to-sort column headers (`sortRows`/`sortTh`/
+`bindSortHeaders`, shared helpers) — click again to flip direction.
+↳ note: found and fixed a real, pre-existing bug while testing against an
+actual user-supplied Excel export: `src/csv.js`'s parser didn't strip a
+leading UTF-8 byte-order-mark, so a BOM-prefixed CSV (which Excel's own
+"CSV UTF-8" export always produces) silently broke the *first* header's
+name-matching for every row. This affected the existing Store bulk upload
+too, not just the two new ones. Verified live: a real-browser pass used the
+user's actual 17-row "Terminal operators" export (BOM included, genuinely
+messy real-world data) end to end — parsed correctly, 16 of 17 rows'
+companies auto-created (1 duplicate name correctly deduped), sorting
+exercised on both tables, all cleaned up afterward. `vitest` 104/104
+(added: BOM-stripping test, `.docx` module tests, `quoteFields` 'plain'
+format tests, a `quoteTemplateFromRow`/`ToRow` round-trip for `fileType`).
 
 **Accepted limitations:**
 - No live FX conversion for Store pricing (Naira↔Dollar is a manual

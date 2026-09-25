@@ -41,3 +41,12 @@ export async function downloadText(path) {
   if (error) throw error;
   return await data.text();
 }
+
+// Reads a stored object's binary content (.docx quote templates — item 2's
+// deferred-then-built .docx support). Word's .docx is a zip, not text, so
+// this returns an ArrayBuffer for pizzip to unpack.
+export async function downloadArrayBuffer(path) {
+  const { data, error } = await supabase.storage.from(BUCKET).download(path);
+  if (error) throw error;
+  return await data.arrayBuffer();
+}

@@ -52,10 +52,17 @@ export function computeLineTotals(lineItems) {
   });
 }
 
-export function buildQuoteFieldValues({ quote, lineItems, companyName, preparedBy }) {
+// format: 'html' (default — an HTML <table>, for .html templates) or
+// 'plain' (.docx templates — a Word table needs docxtemplater-style loop
+// tags authored into the file itself, a heavier model this app doesn't use
+// elsewhere, so .docx instead gets one plain text line per item, joined by
+// \n; src/docx.js turns those \n into real Word line breaks on render).
+export function buildQuoteFieldValues({ quote, lineItems, companyName, preparedBy, format = 'html' }) {
   const rows = computeLineTotals(lineItems);
   const subtotal = rows.reduce((sum, r) => sum + r.lineTotal, 0);
-  const itemsTable = `
+  const itemsTable = format === 'plain'
+    ? rows.map(r => `${r.description} — ${r.qty} x ${money(r.unitPrice, quote.currency)} = ${money(r.lineTotal, quote.currency)}`).join('\n')
+    : `
     <table style="width:100%;border-collapse:collapse;font-size:13px;">
       <thead><tr>
         <th style="text-align:left;border-bottom:1px solid #ccc;padding:6px;">Description</th>
@@ -75,14 +82,14 @@ export function buildQuoteFieldValues({ quote, lineItems, companyName, preparedB
   `;
   return {
     kind_label: quote.kind,
-    company_name: escapeHtml(companyName || ''),
-    quote_number: escapeHtml(quote.quoteNumber || ''),
+    company_name: format === 'plain' ? (companyName || '') : escapeHtml(companyName || ''),
+    quote_number: format === 'plain' ? (quote.quoteNumber || '') : escapeHtml(quote.quoteNumber || ''),
     quote_date: new Date(quote.createdAt || Date.now()).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
     items_table: itemsTable,
     subtotal: money(subtotal, quote.currency),
     total: money(subtotal, quote.currency),
-    notes: escapeHtml(quote.notes || ''),
-    prepared_by: escapeHtml(preparedBy || ''),
+    notes: format === 'plain' ? (quote.notes || '') : escapeHtml(quote.notes || ''),
+    prepared_by: format === 'plain' ? (preparedBy || '') : escapeHtml(preparedBy || ''),
   };
 }
 

@@ -10,6 +10,16 @@ export async function create(company) {
   return companyFromRow(saved);
 }
 
+// CSV bulk upload (addendum, item "companies too"). Each lands personal to
+// the uploader (owner_id/visibility are DB-defaulted, same as a single
+// create() via the "Add company" modal) — sharing to general is a separate,
+// deliberate action per HT-F, not implied by a bulk import.
+export async function bulkCreate(rows) {
+  const payload = rows.map(r => ({ id: crypto.randomUUID(), ...companyToRow(r) }));
+  const saved = await write('companies', 'insert', { row: payload }, { many: true });
+  return saved.map(companyFromRow);
+}
+
 export async function updateIdentity(id, { name, type, summary, sector }) {
   const row = {};
   if (name !== undefined) row.name = name;
