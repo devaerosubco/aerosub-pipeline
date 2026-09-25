@@ -59,5 +59,18 @@ ok(bucket === 'f', 'store-attachments bucket exists and is private');
 const storagePol = Number(psql(`select count(*) from pg_policies where schemaname='storage' and tablename='objects' and policyname like '%store attachments%';`));
 ok(storagePol === 4, `4 storage.objects policies for store-attachments (got ${storagePol})`);
 
+// 7. tasks/companies (V2 HT-F): confirm "members read" is actually
+// visibility-gated now, not still the flat is_member()-only predicate the
+// standard loop originally gave every table (the policy count alone
+// can't tell the two apart — it's still 4 policies either way).
+for (const t of ['tasks', 'companies']) {
+  const qual = psql(`select qual from pg_policies where schemaname='public' and tablename='${t}' and policyname='members read';`);
+  ok(qual.includes('visibility'), `${t} "members read" policy is visibility-gated`);
+  const cols = psql(`select column_name from information_schema.columns
+    where table_schema='public' and table_name='${t}' and column_name in ('owner_id','assigned_to','visibility')
+    order by column_name;`).split('\n');
+  ok(cols.length === 3, `${t} has owner_id/assigned_to/visibility columns`);
+}
+
 console.log(`\ndb-check: ${fail === 0 ? 'OK' : 'FAILED'}  (${pass} pass, ${fail} fail)`);
 process.exit(fail === 0 ? 0 : 1);

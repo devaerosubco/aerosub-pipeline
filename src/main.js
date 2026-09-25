@@ -664,6 +664,8 @@ const ui = {
   storeExpanded:new Set(), // list-view "expand for more info" (V2 HT-C)
   storeVisibleCount:50,    // pagination — "5 columns by 10 rows" (V2 HT-C)
   createTab:'quotes',      // 'quotes' | 'templates' — Create tab sub-nav (V2 HT-D)
+  taskTab:'general',       // 'personal' | 'general' (V2 HT-F) — general by default so existing (pre-migration) tasks still show up
+  companyTab:'general',    // same reasoning, for Companies
   drawerQuoteId:null,
   drawerRfqId:null,        // V2 HT-E
   drawerKind:null,        // 'company' | 'product' | 'service' | 'competitor' | 'event' | null
@@ -740,7 +742,21 @@ function loadQuoteEditor(quote){
 }
 
 // RFQ Manager (V2 HT-E) — same lazy-load pattern as CREATE_DATA/QUOTE_EDITOR.
-const RFQ_DATA = { rfqs: [], teammates: [], loaded: false, loading: false };
+// Shared team-name lookup (V2 HT-E/F) — RFQ Manager, Plan and Companies all
+// need "look up a teammate's display name by id"; a 3rd copy of the same
+// listProfiles()-then-index logic would have been a real DRY violation.
+const TEAM_ROSTER = { members: [], loaded: false, loading: false };
+function loadTeamRoster(){
+  if (TEAM_ROSTER.loading || TEAM_ROSTER.loaded) return;
+  TEAM_ROSTER.loading = true;
+  listProfiles()
+    .then(members=>{ TEAM_ROSTER.members = members; TEAM_ROSTER.loaded = true; })
+    .catch(()=>{})
+    .finally(()=>{ TEAM_ROSTER.loading = false; renderApp(); });
+}
+function teammateName(id){ const t = TEAM_ROSTER.members.find(x=>x.id===id); return t ? (t.full_name||t.email) : ''; }
+
+const RFQ_DATA = { rfqs: [], loaded: false, loading: false };
 function loadRfqData(){
   if (RFQ_DATA.loading) return;
   RFQ_DATA.loading = true;
@@ -749,8 +765,9 @@ function loadRfqData(){
   // without this it'd be empty until the user happened to visit Create
   // first (a false "upload a template first" if templates actually exist).
   if (!CREATE_DATA.loaded) loadCreateData();
-  Promise.all([rfqsApi.listAll(), listProfiles()])
-    .then(([rfqs, teammates])=>{ RFQ_DATA.rfqs = rfqs; RFQ_DATA.teammates = teammates; RFQ_DATA.loaded = true; })
+  if (!TEAM_ROSTER.loaded) loadTeamRoster();
+  rfqsApi.listAll()
+    .then(rfqs=>{ RFQ_DATA.rfqs = rfqs; RFQ_DATA.loaded = true; })
     .catch(()=>{ toast('Could not load RFQs'); })
     // Same reason as loadCreateData(): the "New RFQ" header button is gated
     // on RFQ_DATA.loaded and lives in renderApp()'s template, not
@@ -1323,9 +1340,12 @@ function openManageNewsModal(){
 /* ============================================================
    COMPANIES
    ============================================================ */
+// V2 HT-F — same "assigned to you shows in both tabs" rule as taskTabItems().
 function filteredCompanies(){
   const q = ui.search.trim().toLowerCase();
+  const me = AUTH.profile?.id;
   return DATA.companies.filter(c=>{
+    if (ui.companyTab==='general' ? c.visibility!=='general' : !(c.ownerId===me || c.assignedTo===me)) return false;
     if (ui.companyFilter.priority && c.priority!==ui.companyFilter.priority) return false;
     if (ui.companyFilter.stage && c.stage!==ui.companyFilter.stage) return false;
     if (!q) return true;
@@ -1334,10 +1354,15 @@ function filteredCompanies(){
 }
 
 function renderCompanies(){
+  if (!TEAM_ROSTER.loaded) loadTeamRoster();
   const list = filteredCompanies();
   return `
     <div class="toolbar">
       <div class="seg">
+        <button data-company-tab="personal" class="${ui.companyTab==='personal'?'active':''}">Personal</button>
+        <button data-company-tab="general" class="${ui.companyTab==='general'?'active':''}">General</button>
+      </div>
+      <div class="seg" style="margin-left:12px;">
         <button data-layout="board" class="${ui.companyLayout==='board'?'active':''}">Board</button>
         <button data-layout="table" class="${ui.companyLayout==='table'?'active':''}">Table</button>
       </div>
@@ -1379,6 +1404,7 @@ function renderKCard(c){
       <div class="metarow">
         <span class="chip chip-${c.priority}"><span class="chip-dot"></span>${c.priority}</span>
         ${c.flags && c.flags.length ? `<span class="chip ${c.flags[0].type==='critical'?'chip-high':'chip-gold'}">${c.flags[0].type==='critical'?ICONS.warn:ICONS.star}</span>` : ''}
+        ${c.visibility==='personal' ? `<span class="chip chip-low" style="font-size:9px;">Personal</span>` : ''}
       </div>
       <div class="stats">
         <span>${ICONS.warn} ${c.painPoints.length} gaps</span>
@@ -1399,7 +1425,7 @@ function renderCompanyTable(list){
       <tbody>
         ${list.map(c=>`
           <tr data-open-company="${c.id}">
-            <td class="name-cell">${esc(c.name)}</td>
+            <td class="name-cell">${esc(c.name)}${c.visibility==='personal'?` <span class="chip chip-low" style="font-size:9px;">Personal</span>`:''}</td>
             <td>${esc(c.type)}</td>
             <td><span class="chip chip-teal">${stageOf(c.stage).label}</span></td>
             <td><span class="chip chip-${c.priority}"><span class="chip-dot"></span>${c.priority}</span></td>
@@ -1414,6 +1440,7 @@ function renderCompanyTable(list){
 }
 
 function bindCompaniesControls(){
+  document.querySelectorAll('[data-company-tab]').forEach(b=>b.addEventListener('click', ()=>{ ui.companyTab=b.dataset.companyTab; renderView(); }));
   document.querySelectorAll('[data-layout]').forEach(b=>b.addEventListener('click', ()=>{ ui.companyLayout=b.dataset.layout; renderView(); }));
   const fp = document.getElementById('filterPriority');
   if (fp) fp.addEventListener('change', e=>{ ui.companyFilter.priority=e.target.value; renderView(); });
@@ -1578,6 +1605,17 @@ function renderDrawer(){
       </div>
 
       <div class="dsec">
+        <div class="dsec-head"><h4>Visibility ${c.visibility==='personal'?`<span class="chip chip-low" style="font-size:9px;">Personal</span>`:`<span class="chip chip-good" style="font-size:9px;">General</span>`}</h4></div>
+        <div class="add-inline">
+          <select id="coAssignee"><option value="">— unassigned —</option>${TEAM_ROSTER.members.map(t=>`<option value="${t.id}" ${c.assignedTo===t.id?'selected':''}>${esc(t.full_name||t.email)}</option>`).join('')}</select>
+        </div>
+        <div class="small-btn-row">
+          <button class="btn btn-sm btn-primary" id="saveAssigneeBtn">Save assignee</button>
+          ${c.visibility==='personal' && c.ownerId===AUTH.profile?.id ? `<button class="btn btn-sm btn-ghost" id="shareCompanyBtn">Share to General</button>` : ''}
+        </div>
+      </div>
+
+      <div class="dsec">
         <div class="dsec-head"><h4>Pain points & inspection challenges</h4></div>
         <div class="bullets" id="painList">
           ${c.painPoints.map((p,i)=>`<div class="bullet pain"><span>${esc(p)}</span><button class="x" data-del-pain="${i}">${ICONS.x}</button></div>`).join('')}
@@ -1645,9 +1683,10 @@ function renderDrawer(){
             <div class="task-row ${t.done?'done':''}">
               <input type="checkbox" data-toggle-task="${t.id}" ${t.done?'checked':''}>
               <div style="flex:1">
-                <div class="t">${esc(t.title)}</div>
+                <div class="t">${esc(t.title)}${t.visibility==='personal'?` <span class="chip chip-low" style="font-size:9px;">Personal</span>`:''}</div>
                 <div class="meta ${!t.done && isOverdue(t.due)?'overdue':''}">${t.due?('Due '+fmtDate(t.due)):'No date'} · ${t.priority}</div>
               </div>
+              ${t.visibility==='personal' && t.ownerId===AUTH.profile?.id?`<button class="x" data-share-task="${t.id}" title="Share to general" style="background:none;border:none;color:var(--faint);cursor:pointer;">${ICONS.upload}</button>`:''}
               <button class="x" data-del-task="${t.id}" style="background:none;border:none;color:var(--faint);cursor:pointer;">${ICONS.x}</button>
             </div>
           `).join('')}
@@ -1714,6 +1753,25 @@ function bindDrawer(c){
       c.name = name; c.type = type; c.sector = sector; c.summary = summary;
       toast('Details saved'); renderApp(); openDrawer(c.id);
     }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+  });
+
+  document.getElementById('saveAssigneeBtn').addEventListener('click', async ()=>{
+    const assignedTo = document.getElementById('coAssignee').value;
+    try{
+      await companiesApi.setAssignee(c.id, assignedTo);
+      c.assignedTo = assignedTo;
+      toast('Assignee saved'); renderApp(); openDrawer(c.id);
+    }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
+  });
+  const shareCompanyBtn = document.getElementById('shareCompanyBtn');
+  if (shareCompanyBtn) shareCompanyBtn.addEventListener('click', ()=>{
+    openConfirmModal('Share this account to General? Every member will be able to see and act on it — this can\'t be undone.', async ()=>{
+      try{
+        await companiesApi.shareToGeneral(c.id);
+        c.visibility = 'general';
+        renderApp(); openDrawer(c.id); toast('Shared to General');
+      }catch(e){ toast('Could not share — ' + (e.message || 'try again')); }
+    }, 'Share');
   });
 
   document.getElementById('addPainBtn').addEventListener('click', async ()=>{
@@ -1816,6 +1874,14 @@ function bindDrawer(c){
       DATA.tasks = DATA.tasks.filter(t=>t.id!==id);
       renderApp(); openDrawer(c.id);
     }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+  }));
+  document.querySelectorAll('[data-share-task]').forEach(b=>b.addEventListener('click', ()=>{
+    const t = DATA.tasks.find(x=>x.id===b.dataset.shareTask);
+    if (!t) return;
+    openConfirmModal('Share this action to General? Everyone will be able to see and act on it — this can\'t be undone.', async ()=>{
+      try{ await tasksApi.shareToGeneral(t.id); t.visibility = 'general'; renderApp(); openDrawer(c.id); toast('Shared to General'); }
+      catch(e){ toast('Could not share — ' + (e.message || 'try again')); }
+    }, 'Share');
   }));
   document.getElementById('addTaskInline').addEventListener('click', ()=>openAddTaskModal(c.id));
 
@@ -3932,6 +3998,7 @@ async function enterApp(){
   STORE_SHARES.loaded = false; ITEM_SHARE.key = null;
   CREATE_DATA.loaded = false; QUOTE_EDITOR.loaded = false; QUOTE_EDITOR.quoteId = null;
   RFQ_DATA.loaded = false; RFQ_EDITOR.loaded = false; RFQ_EDITOR.rfqId = null;
+  TEAM_ROSTER.loaded = false;
   const u = new URL(location.href);
   const storeParam = u.searchParams.get('store');   // V2 HT-C share deep link
   if (location.search.indexOf('invite=') !== -1 || location.search.indexOf('email=') !== -1 || storeParam){
@@ -3963,6 +4030,7 @@ async function loadDataAndRender(){
     DATA = await store.loadAll();
     researchEnd = false; activityEnd = false;
     renderApp();
+    loadTeamRoster(); // warm it early — Plan/Companies/RFQ assignee pickers all need it (V2 HT-E/F)
   }catch(e){
     renderLoadingScreen({ error: e.message || 'Could not load your data.' });
   }
@@ -4086,12 +4154,25 @@ function bindContactsControls(){
 /* ============================================================
    TASKS VIEW
    ============================================================ */
+// V2 HT-F: a task lands in Personal if you own or are assigned to it
+// (regardless of its visibility flag — this is what makes an assigned
+// general task show in both tabs, per item 6's "only task assigned to you
+// will appear in both personal and general"); General shows every
+// visibility='general' task, full stop. RLS already guarantees you only
+// ever receive personal rows you're entitled to see, so no extra
+// filtering is needed to keep this safe.
+function taskTabItems(){
+  const me = AUTH.profile?.id;
+  return DATA.tasks.filter(t=> ui.taskTab==='general' ? t.visibility==='general' : (t.ownerId===me || t.assignedTo===me));
+}
 function renderTasks(){
-  const open = DATA.tasks.filter(t=>!t.done);
+  if (!TEAM_ROSTER.loaded) loadTeamRoster();
+  const list = taskTabItems();
+  const open = list.filter(t=>!t.done);
   const overdue = open.filter(t=>isOverdue(t.due)).sort((a,b)=>a.due.localeCompare(b.due));
   const week = open.filter(t=>!isOverdue(t.due) && daysUntil(t.due)<=7).sort((a,b)=>a.due.localeCompare(b.due));
   const later = open.filter(t=>!isOverdue(t.due) && daysUntil(t.due)>7).sort((a,b)=>a.due.localeCompare(b.due));
-  const done = DATA.tasks.filter(t=>t.done);
+  const done = list.filter(t=>t.done);
 
   const group = (title, items) => items.length ? `
     <div class="task-group">
@@ -4100,29 +4181,43 @@ function renderTasks(){
     </div>` : '';
 
   return `
+    <div class="toolbar">
+      <div class="seg">
+        <button data-task-tab="personal" class="${ui.taskTab==='personal'?'active':''}">Personal</button>
+        <button data-task-tab="general" class="${ui.taskTab==='general'?'active':''}">General</button>
+      </div>
+    </div>
     ${group('Overdue', overdue)}
     ${group('Next 7 days', week)}
     ${group('Later', later)}
     ${group('Done', done)}
-    ${DATA.tasks.length===0 ? `<div class="empty">${ICONS.empty}<div>No actions yet — add one to get started.</div></div>` : ''}
+    ${list.length===0 ? `<div class="empty">${ICONS.empty}<div>${ui.taskTab==='personal'?'Nothing personal yet — actions you create start here.':'No general actions yet.'}</div></div>` : ''}
   `;
 }
 function taskCard(t){
   const co = companyById(t.companyId);
+  const me = AUTH.profile?.id;
+  const canShare = t.visibility==='personal' && t.ownerId===me;
   return `
     <div class="task-card ${t.done?'done':''}">
       <input type="checkbox" data-toggle-task-g="${t.id}" ${t.done?'checked':''}>
       <div style="flex:1;min-width:0;">
         <div class="title">${esc(t.title)}</div>
         ${co?`<div class="co" data-open-company="${co.id}">${esc(co.name)}</div>`:''}
+        <div class="sub" style="margin-top:2px;">
+          ${t.visibility==='personal'?`<span class="chip chip-low" style="font-size:9px;">Personal</span> `:''}
+          ${t.assignedTo?`Assigned to ${esc(teammateName(t.assignedTo)||'…')}`:''}
+        </div>
       </div>
       <span class="chip chip-${t.priority}"><span class="chip-dot"></span>${t.priority}</span>
       <div class="due ${!t.done && isOverdue(t.due)?'overdue':''}">${t.due?fmtDate(t.due):'—'}</div>
+      ${canShare?`<button class="btn btn-sm btn-ghost" data-share-task-g="${t.id}" title="Share to general">${ICONS.upload}</button>`:''}
       <button class="del" data-del-task-g="${t.id}">${ICONS.x}</button>
     </div>
   `;
 }
 function bindTasksControls(){
+  document.querySelectorAll('[data-task-tab]').forEach(b=>b.addEventListener('click', ()=>{ ui.taskTab=b.dataset.taskTab; renderView(); }));
   document.querySelectorAll('[data-toggle-task-g]').forEach(b=>b.addEventListener('change', async ()=>{
     const t = DATA.tasks.find(x=>x.id===b.dataset.toggleTaskG);
     if (!t) return;
@@ -4134,6 +4229,14 @@ function bindTasksControls(){
     const id = b.dataset.delTaskG;
     try{ await tasksApi.remove(id); DATA.tasks = DATA.tasks.filter(t=>t.id!==id); renderApp(); }
     catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+  }));
+  document.querySelectorAll('[data-share-task-g]').forEach(b=>b.addEventListener('click', ()=>{
+    const t = DATA.tasks.find(x=>x.id===b.dataset.shareTaskG);
+    if (!t) return;
+    openConfirmModal('Share this action to General? Everyone will be able to see and act on it — this can\'t be undone.', async ()=>{
+      try{ await tasksApi.shareToGeneral(t.id); t.visibility = 'general'; renderApp(); toast('Shared to General'); }
+      catch(e){ toast('Could not share — ' + (e.message || 'try again')); }
+    }, 'Share');
   }));
   document.querySelectorAll('[data-open-company]').forEach(el=>{
     el.addEventListener('click', (e)=>{ e.stopPropagation(); openDrawer(el.dataset.openCompany); });
@@ -4870,7 +4973,6 @@ function rfqStatusChipClass(s){
   return s==='won' ? 'chip-good' : s==='lost' ? 'chip-high' : s==='bidding' ? 'chip-gold' : (s==='published'||s==='in_progress') ? 'chip-medium' : 'chip-low';
 }
 function rfqById(id){ return RFQ_DATA.rfqs.find(r=>r.id===id); }
-function teammateName(id){ const t = RFQ_DATA.teammates.find(x=>x.id===id); return t ? (t.full_name||t.email) : ''; }
 
 function renderRfqs(){
   if (!RFQ_DATA.loaded) return `<div class="empty" style="padding:14px;">${ICONS.empty}<div>Loading…</div></div>`;
@@ -5011,7 +5113,7 @@ function renderRfqDrawer(){
           <select id="rStatus">${RFQ_STATUSES.map(s=>`<option value="${s}" ${r.status===s?'selected':''}>${rfqStatusLabel(s)}</option>`).join('')}</select>
         </div>
         <div class="add-inline">
-          <select id="rAssignee"><option value="">— unassigned —</option>${RFQ_DATA.teammates.map(t=>`<option value="${t.id}" ${r.assignedTo===t.id?'selected':''}>${esc(t.full_name||t.email)}</option>`).join('')}</select>
+          <select id="rAssignee"><option value="">— unassigned —</option>${TEAM_ROSTER.members.map(t=>`<option value="${t.id}" ${r.assignedTo===t.id?'selected':''}>${esc(t.full_name||t.email)}</option>`).join('')}</select>
         </div>` : `
         <div class="needs-row"><span class="t">Assigned to</span><span class="d">${r.assignedTo?esc(teammateName(r.assignedTo)):'Unassigned'}</span></div>
         `}
@@ -5227,6 +5329,7 @@ function openConfirmModal(message, onConfirm, confirmLabel){
 function openAddCompanyModal(){
   openModal(`
     <h3>New account</h3>
+    <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Starts personal — only you (and anyone you assign it to) can see it. Share it to General from the account drawer once it's ready for the team.</p>
     <div class="field"><label>Company name</label><input id="mName"></div>
     <div class="field"><label>Type</label><input id="mType" placeholder="e.g. Indigenous — Private E&P"></div>
     <div class="field"><label>Sector</label><input id="mSector" list="mSectorOptions" placeholder="e.g. Oil &amp; Gas — Upstream">${sectorDatalist('mSectorOptions')}</div>
@@ -5393,14 +5496,19 @@ function openEmailModal(contactId){
 }
 
 function openAddTaskModal(companyId){
-  const options = '<option value="">(General — no account)</option>' + DATA.companies.map(c=>`<option value="${c.id}" ${c.id===companyId?'selected':''}>${esc(c.name)}</option>`).join('');
+  const options = '<option value="">(No account)</option>' + DATA.companies.map(c=>`<option value="${c.id}" ${c.id===companyId?'selected':''}>${esc(c.name)}</option>`).join('');
   const todayIso = new Date().toISOString().slice(0,10);
+  if (!TEAM_ROSTER.loaded) loadTeamRoster();
+  const assigneeOptions = TEAM_ROSTER.members.filter(t=>t.id!==AUTH.profile?.id)
+    .map(t=>`<option value="${t.id}">${esc(t.full_name||t.email)}</option>`).join('');
   openModal(`
     <h3>New action</h3>
+    <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">Starts personal — only you (and anyone you assign it to) can see it. Share it to General later if the team should see it too.</p>
     <div class="field"><label>Title</label><input id="mTitle" placeholder="e.g. Follow up on LinkedIn message"></div>
     <div class="field"><label>Account</label><select id="mCo">${options}</select></div>
     <div class="field"><label>Due date</label><input type="date" id="mDue" value="${todayIso}"></div>
     <div class="field"><label>Priority</label><select id="mPriority">${PRIORITIES.map(p=>`<option value="${p}">${p}</option>`).join('')}</select></div>
+    <div class="field"><label>Assign to (optional)</label><select id="mAssignee"><option value="">— just me —</option>${assigneeOptions}</select></div>
     <div class="modal-actions">
       <button class="btn" id="mCancel">Cancel</button>
       <button class="btn btn-primary" id="mSave">Add action</button>
@@ -5413,6 +5521,7 @@ function openAddTaskModal(companyId){
       const task = {
         id: crypto.randomUUID(), title, companyId: body.querySelector('#mCo').value,
         due: body.querySelector('#mDue').value, priority: body.querySelector('#mPriority').value, done:false,
+        assignedTo: body.querySelector('#mAssignee').value,
       };
       const save = body.querySelector('#mSave'); save.disabled = true;
       try{

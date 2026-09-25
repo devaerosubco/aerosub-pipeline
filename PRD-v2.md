@@ -273,25 +273,65 @@ code. Modeled the Products/Services toggle on the Companies board/table
   cannot catch — another point for keeping the real-browser pass mandatory,
   not optional, per phase.
 
-## 6. Phase 5 — Personal vs. general Tasks & Companies (queued, highest-risk)
+## 6. Phase 5 — Personal vs. general Tasks & Companies (HT-F, shipped — the highest-risk phase)
 
-No owner/visibility concept exists anywhere in this app today — every company
-and task is visible to every member (flat model; asserted directly by
-`rls-test.mjs`'s "member can update any company (flat model, no per-row
-owner)"). This phase is a genuine, net-new RLS design, not an extension of an
-existing pattern, and a real behavior change to "every member sees every
-company" — confirm with the user again before starting.
+Confirmed scope with the user before building (they chose "build it as
+originally planned" over a smaller "tasks only" alternative). No owner/
+visibility concept existed anywhere in this app before this phase — every
+company and task was visible to every member (flat model; was directly
+asserted by `rls-test.mjs`'s old "member can update any company (flat model,
+no per-row owner)", now fixed since it became factually wrong the moment
+this migration landed). This is the one genuinely net-new RLS design in the
+whole V2 effort, and a real behavior change to "every member sees every
+company" — everything else in V1 and V2 alike stays flat.
 
-- `tasks` gains `owner_id`, `assigned_to`, `visibility ('personal'|'general')`.
-  `companies` gains the same three columns. SELECT policy: `visibility=
-  'general' OR owner_id=auth.uid() OR assigned_to=auth.uid()` (an assigned
-  personal task/company is visible to its assignee even though it's
-  "personal" — matches "task assigned to you will appear in both personal and
-  general"). "Share to general" = a one-way, owner-only UPDATE flipping
-  `visibility`.
-- Pulls `tasks`/`companies` out of the standard flat RLS loop
-  (`20260904120010_rls.sql`) into bespoke policies, same style as the existing
-  hand-written `profiles`/`activity_log` policies.
+- `tasks` gains `owner_id` (defaults to `auth.uid()`, so no call site has to
+  remember to set it — nullable, since pre-existing rows have no real
+  "creator"), `assigned_to`, `visibility ('personal'|'general'`, default
+  `'personal'`). `companies` gains the same three columns. Every row that
+  existed before this migration was backfilled to `visibility='general'` —
+  nothing vanishes for anyone; only rows created after this migration start
+  personal.
+- SELECT policy: `visibility='general' OR owner_id=auth.uid() OR
+  assigned_to=auth.uid()`. **UPDATE and DELETE use the same predicate**, not
+  just `is_member()` — otherwise a member could blind-write a personal row
+  they aren't even allowed to read (Postgres RLS lets an UPDATE target any
+  row its USING clause admits, independent of whether a SELECT policy would
+  have allowed reading it first). INSERT requires `owner_id = auth.uid()`,
+  so nobody can fabricate a row "owned" by someone else.
+- "Share to general" = a one-way, owner-only UPDATE flipping `visibility`,
+  enforced by one shared `lock_visibility()` trigger attached to both
+  tables (`visibility`/`owner_id` are named identically on both;
+  `TG_TABLE_NAME` makes the error message table-specific for free). An
+  assignee cannot share on the owner's behalf.
+- Pulled `tasks`/`companies` out of the standard flat RLS loop
+  (`20260904120010_rls.sql`) into bespoke policies, same style as the
+  existing hand-written `profiles`/`activity_log` policies.
+- **UI rule, deliberately not "visibility='personal'"**: the Personal tab
+  shows rows you **own or are assigned to**, regardless of their visibility
+  flag; the General tab shows `visibility='general'`, full stop. This is
+  what makes a *general* task assigned to you show in **both** tabs —
+  matching item 6's "only task assigned to you will appear in both personal
+  and general" precisely, rather than the simpler-but-wrong reading of
+  "Personal tab = personal rows only."
+- **Known, accepted scope limit**: child tables of companies (contacts,
+  `company_flags`, `company_products`, `company_stage_changes`) are **not**
+  gated by their parent company's visibility — they keep their existing
+  flat "any member" policies. A personal company's name/notes/stage
+  disappear from the Companies view for other members, but its contacts
+  would still turn up in a direct query against `contacts`. This is
+  consistent with the app's existing threat model (member-vs-not was always
+  the boundary, never fine-grained per-row ownership below the top level),
+  and re-deriving visibility through 4 more tables' RLS was out of scope for
+  this phase — a contained, well-understood follow-up if it's ever needed.
+- Verified with **two independent, concurrently signed-in browser sessions**
+  (not one — a single session can't prove cross-user isolation): a personal
+  task/company is invisible to a second real member, showing to nobody in
+  General including its own owner; sharing to general makes it visible to
+  the other member; assigning a personal row to someone makes it appear in
+  *their own* Personal tab. Plus the full RLS matrix live (105/105) and
+  `db:check`'s two new structural assertions that the read policies are
+  actually visibility-gated, not silently still flat — see TASKS-v2.md.
 
 ## 7. Phase 6 — Analytics tab (queued)
 

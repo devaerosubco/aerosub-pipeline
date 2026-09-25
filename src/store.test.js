@@ -37,6 +37,16 @@ describe('companies', () => {
     expect(back.sector).toBe('');
   });
 
+  it('maps visibility/owner_id/assigned_to (V2 HT-F) — companyToRow never emits them (DB-defaulted/admin-set)', () => {
+    const c = companyFromRow({ id: 'x', name: 'X', owner_id: 'u1', assigned_to: 'u2', visibility: 'personal' });
+    expect(c.ownerId).toBe('u1');
+    expect(c.assignedTo).toBe('u2');
+    expect(c.visibility).toBe('personal');
+    const row = companyToRow({ name: 'X', ownerId: 'u1', visibility: 'personal' });
+    expect(row.owner_id).toBeUndefined();
+    expect(row.visibility).toBeUndefined();
+  });
+
   it('defaults text[] columns to [] when the DB returns null', () => {
     const c = companyFromRow({ id: 'x', name: 'X', pain_points: null, current_solutions: null });
     expect(c.painPoints).toEqual([]);
@@ -154,6 +164,18 @@ describe('tasks', () => {
   it('maps a general task (company_id null) to companyId ""', () => {
     const t = taskFromRow({ id: 't1', title: 'Do a thing', company_id: null, due: '2026-01-01', priority: 'high', done: false });
     expect(t.companyId).toBe('');
+  });
+
+  it('maps visibility/owner_id/assigned_to (V2 HT-F)', () => {
+    const t = taskFromRow({ id: 't2', title: 'X', owner_id: 'u1', assigned_to: 'u2', visibility: 'personal' });
+    expect(t.ownerId).toBe('u1');
+    expect(t.assignedTo).toBe('u2');
+    expect(t.visibility).toBe('personal');
+  });
+
+  it('defaults visibility to "general" when missing (matches the DB default for pre-migration rows)', () => {
+    const t = taskFromRow({ id: 't3', title: 'X', visibility: undefined });
+    expect(t.visibility).toBe('general');
   });
 });
 

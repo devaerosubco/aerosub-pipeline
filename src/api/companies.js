@@ -43,6 +43,17 @@ export async function remove(id) {
   await write('companies', 'delete', { match: { id } });
 }
 
+// V2 HT-F — personal vs. general. setAssignee is flat (anyone who can
+// already update the row can reassign it); shareToGeneral is the one-way,
+// owner-only flip — the DB trigger (lock_visibility) is the real
+// enforcement, this is just the call.
+export async function setAssignee(id, assignedTo) {
+  await write('companies', 'update', { row: { assigned_to: assignedTo || null }, match: { id } });
+}
+export async function shareToGeneral(id) {
+  await write('companies', 'update', { row: { visibility: 'general' }, match: { id } });
+}
+
 // Re-tagging a product updates the rationale instead of duplicating the tag
 // (E-2) — `unique (company_id, product_id)` + upsert. `id` is deliberately
 // left off the row: on a fresh insert the DB default fills it; on a conflict

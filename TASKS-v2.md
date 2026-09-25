@@ -13,7 +13,7 @@ Companion doc: [PRD-v2.md](PRD-v2.md). Refs like "PRD-v2 §5" point into it. Thi
 | HT-C — Store: dashboard, card/list, bulk actions, sharing | ✅ 2026-09-17, verified 2026-09-18 — same run |
 | HT-D — Create: Quotes/Proforma/Commercials + templates | ✅ 2026-09-21 (`.html` only — `.docx` deliberately not attempted, see PRD-v2 §4) |
 | HT-E — RFQ Manager | ✅ 2026-09-24, verified live (db:check 28 tables/106 policies, test:rls 89/89, Playwright 11/11) |
-| HT-F — Personal vs. general Tasks & Companies | pending |
+| HT-F — Personal vs. general Tasks & Companies | ✅ 2026-09-24, verified live (db:check, test:rls 105/105, 2-browser-session Playwright 9/9) |
 | HT-G — Analytics tab | pending |
 | HT-H — Alerts + RSS feed connector | pending |
 
@@ -375,18 +375,90 @@ Export reuses HT-D's quote engine and excludes `vendor_verified`/
 
 ## HT-F. Personal vs. general Tasks & Companies
 
-**Acceptance criteria:** PRD-v2 §6 — read it again before starting, this is
-the highest-risk phase (net-new RLS design, real behavior change to today's
-flat model). Confirm scope with the user before writing migrations.
+**Acceptance criteria:** PRD-v2 §6 (updated — read it). The highest-risk
+phase — net-new RLS design, a real behavior change to today's flat model.
+Confirmed scope with the user before writing migrations (they chose "build
+it as originally planned" over the smaller "tasks only" option).
 
-- [ ] `tasks`/`companies` gain `owner_id`, `assigned_to`, `visibility`.
-- [ ] Pull both tables out of the standard flat RLS loop
-  (`20260904120010_rls.sql`) into bespoke SELECT policies (own/assigned/
-  general); INSERT/UPDATE/DELETE stay member-gated.
-- [ ] "Share to general" UI (owner-only, one-way).
-- [ ] Tests: RLS matrix specifically for the new visibility rule (owner sees
-  own personal rows, a non-owner/non-assignee doesn't, an assignee does, a
-  general row is visible to everyone); a real-browser pass.
+- [x] `20260924130001_task_company_visibility.sql` — `tasks`/`companies`
+  gain `owner_id` (defaults to `auth.uid()` — no call site has to remember
+  to set it), `assigned_to`, `visibility` (`'personal'|'general'`, defaults
+  `'personal'`). Every pre-existing row backfilled to `'general'` so nothing
+  vanishes for anyone once the new policies apply — only rows created after
+  this migration start personal.
+- [x] Pulled both tables out of the standard flat RLS loop into bespoke
+  policies: SELECT/UPDATE/DELETE all use `visibility='general' OR
+  owner_id=auth.uid() OR assigned_to=auth.uid()` (UPDATE and DELETE use the
+  *same* predicate as SELECT, not just `is_member()` — otherwise a member
+  could blind-write a personal row they aren't even allowed to read, since
+  Postgres RLS lets an UPDATE target any row its USING clause admits,
+  independent of the SELECT policy). INSERT requires `owner_id =
+  auth.uid()`, so nobody can fabricate a row "owned" by someone else.
+- [x] `lock_visibility()` trigger (one shared function, attached to both
+  tables — `visibility`/`owner_id` are named identically on both, and
+  `TG_TABLE_NAME` makes the error message table-specific for free): sharing
+  to general is one-way (can't be undone) and owner-only (an assignee can't
+  do it on the owner's behalf).
+- [x] **Known, accepted scope limit, documented in the migration**: child
+  tables of companies (contacts, company_flags, company_products,
+  company_stage_changes) are NOT gated by their parent's visibility — they
+  keep their existing flat policies. A personal company's name disappears
+  from the Companies view for other members, but its contacts would still
+  turn up in a direct query. Consistent with this app's existing "member
+  vs. not" threat model (never fine-grained ownership); re-deriving
+  visibility through 4 more tables was out of this phase's scope.
+- [x] `src/api/companies.js`/`api/tasks.js` gain `setAssignee`
+  (flat — anyone who can already update the row can reassign it) and
+  `shareToGeneral` (the DB trigger is the real enforcement, this is just
+  the call). `store.js` row⇄app-shape pairs extended.
+- [x] UI: Plan and Companies both gain a Personal/General `.seg` toggle
+  (mirroring the Store/Create sub-nav pattern). The tab filter is "you own
+  it or it's assigned to you" for Personal (not simply `visibility=
+  'personal'`) and "visibility='general'" for General — this is deliberate:
+  it's what makes a *general* task assigned to you show in **both** tabs,
+  matching item 6's "only task assigned to you will appear in both personal
+  and general" exactly. New-task/new-company modals both note "starts
+  personal" up front; a Share-to-General button appears only for the owner
+  of a personal row. New-task modal gains an optional assignee picker.
+  Extracted a shared `TEAM_ROSTER` cache (Plan, Companies and RFQ Manager
+  all need "look up a teammate's name by id" — this was its 3rd copy).
+- [x] `scripts/db-check.mjs` (table/policy counts unchanged — 8 flat
+  policies dropped, 8 bespoke ones added back — plus 2 new structural
+  checks confirming the "members read" policy on each table is actually
+  visibility-gated, not silently still flat) / `scripts/rls-test.mjs`
+  (a 3rd throwaway member added to the harness specifically for this block;
+  full matrix: owner sees their own personal rows, a non-owner/non-assignee
+  doesn't, RLS blocks a blind UPDATE the same as it blocks the SELECT, an
+  assignee does see it, an assignee-but-not-owner is rejected by the
+  trigger when they try to share it, the owner can, it's then visible to
+  everyone, and the one-way rule blocks flipping back) extended for both
+  tables. Also fixed a stale assertion elsewhere in the file ("member can
+  update any company — flat model, no per-row owner") that HT-F's own
+  migration made factually wrong.
+- [x] `npx vitest run` — 81/81 (was 78; +3 `store.test.js` visibility
+  round-trips). `node --check` clean. `npx vite build` clean (489 kB JS /
+  26 kB CSS). `npm run check:secrets` clean.
+- [x] Applied live via `npx supabase migration up`: `db:check` 63/67 (same
+  expected non-reset-DB seed-count noise as every prior phase; table count
+  28 and policy count 106 both matched, plus both new visibility-gate
+  structural checks passed). `test:rls` 105/105 after fixing one **test**
+  bug (not an app bug) caught along the way:
+  - ↳ the companies visibility test asserted a non-owner's share attempt
+    *errors*, but that member was never assigned to the row, so RLS itself
+    silently filters the UPDATE to 0 rows *before* the trigger ever runs —
+    no error, just a no-op. The equivalent task test was already correct
+    (it assigns the second member first, so the UPDATE actually reaches the
+    row and the trigger fires). Fixed the companies test to match.
+- [x] Real-browser Playwright pass (one-off script, deleted after use) —
+  the one phase where a single browser session isn't enough to prove
+  anything, so this used **two independent, concurrently signed-in browser
+  contexts** (the demo admin + a freshly bootstrapped second member) to
+  verify actual cross-user isolation, not just one person's own view: a
+  personal task is invisible to the second member, shows for nobody in
+  General (including its own owner), shared-to-general makes it visible to
+  the other member after a reload, a personal company is invisible to the
+  second member, and assigning it to them makes it appear in *their own*
+  Personal tab. 9/9, zero console/page errors.
 
 ## HT-G. Analytics tab
 

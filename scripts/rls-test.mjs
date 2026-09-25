@@ -75,7 +75,13 @@ async function makeMember(fullName) {
 const memberA = await makeMember('Member A');
 const memberB = await makeMember('Member B');
 
-// --- member: full CRUD on the 15 flat tables ------------------------------
+// --- member: full CRUD on the (mostly) flat tables ------------------------
+// companies/tasks are no longer flat as of V2 HT-F (personal-by-default,
+// visibility-gated) — kept in this array anyway because a plain
+// `select().limit(1)` never *errors* under row-filtering RLS (it just
+// returns fewer/zero rows), so the read-coverage loop below is still a
+// valid check; the companies-specific CRUD asserts right after it are
+// updated to test "the owner can edit their own row", not flatness.
 const FLAT = ['companies', 'company_flags', 'contacts', 'products', 'company_products',
   'competitors', 'competitor_campaigns', 'tasks', 'research_clips', 'events',
   'event_attendees', 'news_items', 'connectors', 'app_settings', 'invites',
@@ -87,15 +93,15 @@ const FLAT = ['companies', 'company_flags', 'contacts', 'products', 'company_pro
     const { error } = await memberA.client.from(t).select('*').limit(1);
     if (!error) readOk++;
   }
-  ok(readOk === FLAT.length, `member can select every flat table (${readOk}/${FLAT.length})`);
+  ok(readOk === FLAT.length, `member can select every table without an RLS error (${readOk}/${FLAT.length})`);
 
   const cid = 'rls-co-' + Date.now();
   const insC = await memberA.client.from('companies').insert({ id: cid, name: 'RLS test co', priority: 'low', stage: 'research' });
-  ok(!insC.error, 'member can insert a company');
+  ok(!insC.error, 'member can insert a company (V2 HT-F: lands personal, owned by them)');
   const updC = await memberA.client.from('companies').update({ notes: 'edited by member' }).eq('id', cid);
-  ok(!updC.error, 'member can update any company (flat model, no per-row owner)');
+  ok(!updC.error, 'the owner can update their own (personal) company');
   const delC = await memberA.client.from('companies').delete().eq('id', cid);
-  ok(!delC.error, 'member can delete a company');
+  ok(!delC.error, 'the owner can delete their own (personal) company');
 }
 
 // --- services (V2 HT-B): flat member CRUD, same as products --------------
@@ -268,6 +274,70 @@ const FLAT = ['companies', 'company_flags', 'contacts', 'products', 'company_pro
   ok(!delRfq.error, 'admin can delete an RFQ');
   const itemGone = (await svc.from('rfq_items').select('id').eq('id', itemId).maybeSingle()).data;
   ok(itemGone === null, 'deleting an RFQ cascades its items');
+}
+
+// --- tasks/companies visibility (V2 HT-F) — the one non-flat RLS design --
+{
+  const memberC = await makeMember('Member C');
+
+  // --- tasks ---
+  const taskId = 'rls-task-' + Date.now();
+  const insTask = await memberB.client.from('tasks').insert({ id: taskId, title: 'Personal task' });
+  ok(!insTask.error, 'member can create a task');
+  const taskRow = (await svc.from('tasks').select('visibility, owner_id').eq('id', taskId).single()).data;
+  ok(taskRow.visibility === 'personal' && taskRow.owner_id === memberB.uid, 'new task defaults to personal, owned by its creator');
+
+  const spoofOwner = await memberC.client.from('tasks').insert({ id: crypto.randomUUID(), title: 'spoof', owner_id: memberB.uid });
+  ok(!!spoofOwner.error, 'member CANNOT insert a task claiming someone else as owner');
+
+  const cCannotSee = await memberC.client.from('tasks').select('id').eq('id', taskId);
+  ok((cCannotSee.data?.length ?? 0) === 0, "a personal task is invisible to a member who isn't its owner or assignee");
+  const cBlindUpdate = await memberC.client.from('tasks').update({ title: 'hijacked' }).eq('id', taskId).select();
+  ok((cBlindUpdate.data?.length ?? 0) === 0, 'that member also cannot blind-update it (UPDATE is gated the same as SELECT)');
+
+  await memberB.client.from('tasks').update({ assigned_to: memberC.uid }).eq('id', taskId);
+  const cNowSees = await memberC.client.from('tasks').select('id').eq('id', taskId);
+  ok((cNowSees.data?.length ?? 0) === 1, 'once assigned to them, that member CAN see the personal task');
+
+  const assigneeShares = await memberC.client.from('tasks').update({ visibility: 'general' }).eq('id', taskId);
+  ok(!!assigneeShares.error, "the assignee (not the owner) CANNOT share the task to general");
+
+  const ownerShares = await memberB.client.from('tasks').update({ visibility: 'general' }).eq('id', taskId).select();
+  ok((ownerShares.data?.length ?? 0) === 1, 'the owner CAN share their task to general');
+
+  const anyoneSeesGeneral = await memberA.client.from('tasks').select('id').eq('id', taskId);
+  ok((anyoneSeesGeneral.data?.length ?? 0) === 1, 'once general, any member can see it');
+
+  const unshare = await memberB.client.from('tasks').update({ visibility: 'personal' }).eq('id', taskId);
+  ok(!!unshare.error, 'a general task CANNOT be made personal again (one-way)');
+
+  await svc.from('tasks').delete().eq('id', taskId);
+
+  // --- companies (same rules, abbreviated) ---
+  const coId = 'rls-vis-co-' + Date.now();
+  const insCo = await memberB.client.from('companies').insert({ id: coId, name: 'RLS visibility test co', priority: 'low', stage: 'research' });
+  ok(!insCo.error, 'member can create a company');
+  const coRow = (await svc.from('companies').select('visibility, owner_id').eq('id', coId).single()).data;
+  ok(coRow.visibility === 'personal' && coRow.owner_id === memberB.uid, 'new company defaults to personal, owned by its creator');
+
+  const coCannotSee = await memberC.client.from('companies').select('id').eq('id', coId);
+  ok((coCannotSee.data?.length ?? 0) === 0, "a personal company is invisible to a member who isn't its owner or assignee");
+
+  // Assign memberC first — otherwise RLS's own USING clause silently filters
+  // the UPDATE to 0 rows (no error) before the trigger ever runs, and this
+  // assertion would prove nothing about the trigger specifically (the task
+  // test above avoids the same trap the same way).
+  await memberB.client.from('companies').update({ assigned_to: memberC.uid }).eq('id', coId);
+  const coShareByNonOwner = await memberC.client.from('companies').update({ visibility: 'general' }).eq('id', coId);
+  ok(!!coShareByNonOwner.error, "an assignee who isn't the owner cannot share the company to general");
+
+  const coShareByOwner = await memberB.client.from('companies').update({ visibility: 'general' }).eq('id', coId).select();
+  ok((coShareByOwner.data?.length ?? 0) === 1, 'the owner can share their company to general');
+
+  const coNowVisible = await memberA.client.from('companies').select('id').eq('id', coId);
+  ok((coNowVisible.data?.length ?? 0) === 1, 'once general, any member can see the company');
+
+  await svc.from('companies').delete().eq('id', coId);
 }
 
 // --- company_stage_changes: select only, no client writes ----------------

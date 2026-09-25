@@ -20,6 +20,7 @@ export function companyFromRow(row) {
     priority: row.priority, stage: row.stage, sector: row.sector || '',
     summary: row.summary || '', notes: row.notes || '',
     painPoints: arr(row.pain_points), currentSolutions: arr(row.current_solutions),
+    ownerId: row.owner_id || '', assignedTo: row.assigned_to || '', visibility: row.visibility || 'general',
     flags: [], contacts: [], recommended: [], recommendedServices: [], // filled in by assembleCompanies()
   };
 }
@@ -63,7 +64,10 @@ export function companyServiceFromRow(row) {
   return { id: row.id, companyId: row.company_id, svc: row.service_id, why: row.rationale || '' };
 }
 export function taskFromRow(row) {
-  return { id: row.id, title: row.title, companyId: row.company_id || '', due: row.due || '', priority: row.priority, done: !!row.done };
+  return {
+    id: row.id, title: row.title, companyId: row.company_id || '', due: row.due || '', priority: row.priority, done: !!row.done,
+    ownerId: row.owner_id || '', assignedTo: row.assigned_to || '', visibility: row.visibility || 'general',
+  };
 }
 export function competitorFromRow(row) {
   return {
