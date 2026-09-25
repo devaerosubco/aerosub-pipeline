@@ -358,22 +358,32 @@ three panels: "RFQs by status" (`RFQ_STATUSES`/`rfqStatusLabel`, complete —
 `.theme-bar-row`/`.grid-tiles`/`.card.panel` markup rather than inventing a
 new bar-chart component.
 
-**Documented scope limit, not a bug**: because of HT-F's per-row visibility,
-the two task panels only reflect tasks the *current viewer* can see (own +
-assigned + general) — a personal task owned by someone else who hasn't
-assigned it to you is invisible here too, same as everywhere else in the app.
-An org-wide total would need a `SECURITY DEFINER` aggregate RPC bypassing
-RLS; deliberately not built for this pass, and both panels carry an in-UI
-caveat saying so. RFQ and research numbers have no such caveat — those two
-tables were never brought into HT-F's visibility model and stay fully flat.
+**Documented scope limit at ship time, since resolved**: because of HT-F's
+per-row visibility, the two task panels originally only reflected tasks the
+*current viewer* could see (own + assigned + general) — a personal task
+owned by someone else who hadn't assigned it to you was invisible here too.
+RFQ and research numbers never had this caveat — those two tables were
+never brought into HT-F's visibility model and stay fully flat.
 
-Verified live: `db:check`/`test:rls` unaffected (schema-free — no new
-migration, no policy changes; only the two HT-F visibility assertions
-already existed and still pass). A real-browser Playwright pass bootstrapped
-a fresh confirmed member and cross-checked every stat tile against a
-service-role hand-count, plus verified the sector/owner bar totals sum to
-exactly what that member's own RLS-scoped `select` on `tasks` returns
-(12/12) — 13/13 checks green, zero console/page errors.
+Verified live at ship time: `db:check`/`test:rls` unaffected (schema-free —
+no new migration, no policy changes; only the two HT-F visibility
+assertions already existed and still passed). A real-browser Playwright
+pass bootstrapped a fresh confirmed member and cross-checked every stat
+tile against a service-role hand-count, plus verified the sector/owner bar
+totals sum to exactly what that member's own RLS-scoped `select` on `tasks`
+returns (12/12) — 13/13 checks green, zero console/page errors.
+
+**Addendum item 5, 2026-09-25 — the scope limit above is now closed.** Two
+`SECURITY DEFINER` RPCs, `task_counts_by_sector()`/`task_counts_by_owner()`
+(`20260925140001_task_count_rpcs.sql`, gated on `is_member()` like
+`is_member()`/`is_admin()` themselves), return only grouped counts —
+never individual task rows — so they bypass HT-F's visibility RLS without
+leaking what it was built to hide. The sector/owner panels now show the
+true org-wide total and the in-UI caveat is gone. Verified: an RLS test
+proves the RPC's total includes a still-personal task owned by a different
+member the caller can't `SELECT` directly, matching a service-role
+hand-count exactly; a real-browser pass reproduced the same proof through
+the live Insights tab.
 
 ## 8. Phase 7 — Alerts + RSS feed connector (HT-H, shipped)
 
@@ -387,13 +397,35 @@ involved. `profiles.event_alerts_enabled boolean not null default true`
 (20260925120001_alerts_profile_pref.sql) is a per-user opt-in stored exactly
 like `full_name`/`department` — no lock-trigger change needed, since
 `lock_profile_identity()` only ever inspects `id`/`email`/`role`. A bell icon
-in the topbar (`renderAlertBell()`, `src/main.js`) shows a badge count of
-`DATA.events` starting within `EVENT_ALERT_WINDOW_DAYS` (30 — chosen over the
-dashboard's 7-day task window because event prep/travel needs more lead
-time), and opens a dropdown listing them; the bell disables itself entirely
-(not just the badge) when the viewer's `event_alerts_enabled` is false. No
-per-item dismiss state — that would need its own table for a "seen" record
-per user per event, out of scope for this pass.
+in the topbar (`renderAlertBell()`, `src/main.js`) shows a badge count and
+opens a dropdown listing them; the bell disables itself entirely (not just
+the badge) when the viewer's `event_alerts_enabled` is false. At ship time
+this had no server component and no per-item dismiss state — both were
+addendum items 3+4, done together 2026-09-25 (see below); this section's
+original "client-side, on-load only" framing describes what shipped in
+HT-H specifically, not the current state.
+
+**Addendum items 3+4, 2026-09-25 — true scheduled notifications + per-item
+dismissal.** Extends ROADMAP.md's own already-documented §2 "Task
+reminders" blueprint (a `notifications` table + an Edge Function on
+`pg_cron` + a header bell polling it), scoped to event alerts instead of
+task reminders. `public.notifications` (`20260925150001_notifications.sql`)
+— RLS lets a member read and dismiss (`update read_at`) only their own
+rows; there is no insert or delete policy at all, so both are denied
+outright regardless of table-level grants — rows are written solely by
+`supabase/functions/event-alerts-poll` (service_role, on the same `pg_cron`
++ `pg_net` + Vault-secret mechanism as `rss-poll`,
+`20260925150002_notifications_cron.sql`, also every 6h). The function
+cross-products every opted-in member with every event inside
+`EVENT_ALERT_WINDOW_DAYS` and upserts on `(user_id, ref_type, ref_id)` with
+`ignoreDuplicates: true`, so re-polling can never resurrect a dismissed
+notification. A best-effort email digest goes out via Resend (already this
+project's Auth SMTP provider — see ROADMAP.md §3) if `RESEND_API_KEY` is
+set as an Edge Function secret; absent, this is a graceful no-op, so
+nothing extra needs configuring in dev. The bell now reads this table
+instead of computing "upcoming events" itself — a deliberate trade of a
+little latency (up to the poll's 6h cadence) for genuine server-side
+delivery and real dismiss state.
 
 **RSS** is exactly V1's already-documented V2 hook (`ROADMAP.md` "Live news /
 competitor feeds": `news_items.live`, an Edge Function on `pg_cron`).

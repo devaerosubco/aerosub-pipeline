@@ -13,7 +13,7 @@ const ok = (c, l) => { console.log(`${c ? 'PASS' : 'FAIL'}  ${l}`); c ? pass++ :
 const rls = psql(`select c.relname, c.relrowsecurity, c.relforcerowsecurity
   from pg_class c join pg_namespace n on n.oid=c.relnamespace
   where n.nspname='public' and c.relkind='r' order by 1;`).split('\n');
-ok(rls.length === 29, `29 public tables (got ${rls.length})`);
+ok(rls.length === 30, `30 public tables (got ${rls.length})`);
 for (const row of rls) {
   const [t, en, fo] = row.split('\t');
   ok(en === 't' && fo === 't', `${t}: RLS enabled+forced`);
@@ -21,7 +21,7 @@ for (const row of rls) {
 
 // 2. policy count
 const pol = Number(psql(`select count(*) from pg_policies where schemaname='public';`));
-ok(pol === 110, `110 policies (got ${pol})`);
+ok(pol === 112, `112 policies (got ${pol})`);
 
 // 3. seed row counts
 const want = {
@@ -31,7 +31,7 @@ const want = {
   product_categories: 7, service_categories: 6,
   services: 0, company_services: 0, store_item_shares: 0,
   quote_templates: 0, quotes: 0, quote_line_items: 0,
-  rfqs: 0, rfq_items: 0, rss_sources: 0,
+  rfqs: 0, rfq_items: 0, rss_sources: 0, notifications: 0,
   profiles: 0, invites: 0, activity_log: 0, company_stage_changes: 0, research_clips: 0,
 };
 for (const [t, n] of Object.entries(want)) {
@@ -95,6 +95,25 @@ ok(cronJob === 't', 'rss-poll-every-6h cron job is registered and active');
 const fileTypeCol = psql(`select column_default from information_schema.columns
   where table_schema='public' and table_name='quote_templates' and column_name='file_type';`);
 ok(fileTypeCol.includes('html'), "quote_templates.file_type exists, defaults 'html'");
+
+// 10. Addendum item 5: the two org-wide task-count RPCs exist and are
+// SECURITY DEFINER (so they actually bypass HT-F's visibility RLS instead
+// of just re-applying it under a different name).
+for (const fn of ['task_counts_by_sector', 'task_counts_by_owner']) {
+  const secdef = psql(`select prosecdef from pg_proc where proname='${fn}' and pronamespace = 'public'::regnamespace;`);
+  ok(secdef === 't', `${fn}() exists and is SECURITY DEFINER`);
+}
+
+// 11. Addendum items 3+4: notifications table shape + its unique
+// (user_id, ref_type, ref_id) idempotency key; the second cron job.
+const notifCols = psql(`select column_name from information_schema.columns
+  where table_schema='public' and table_name='notifications' and column_name in ('user_id','read_at','ref_type','ref_id')
+  order by column_name;`).split('\n');
+ok(notifCols.length === 4, `notifications has user_id/read_at/ref_type/ref_id columns (got ${notifCols.length})`);
+const notifUnique = psql(`select indexdef from pg_indexes where schemaname='public' and tablename='notifications' and indexname='notifications_user_ref_key';`);
+ok(notifUnique.includes('UNIQUE'), 'notifications has a unique (user_id, ref_type, ref_id) index (idempotent poll key)');
+const notifCron = psql(`select active from cron.job where jobname='event-alerts-poll-every-6h';`);
+ok(notifCron === 't', 'event-alerts-poll-every-6h cron job is registered and active');
 
 console.log(`\ndb-check: ${fail === 0 ? 'OK' : 'FAILED'}  (${pass} pass, ${fail} fail)`);
 process.exit(fail === 0 ? 0 : 1);

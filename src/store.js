@@ -120,6 +120,14 @@ export function eventFromRow(row) {
 export function attendeeFromRow(row) {
   return { id: row.id, eventId: row.event_id, name: row.name, companyId: row.company_id || '', status: row.status || '' };
 }
+// Addendum items 3+4 — scheduled notifications + dismissal.
+export function notificationFromRow(row) {
+  return {
+    id: row.id, kind: row.kind, title: row.title, body: row.body || '',
+    refType: row.ref_type || '', refId: row.ref_id || '',
+    readAt: row.read_at || '', createdAt: row.created_at || '',
+  };
+}
 export function connectorFromRow(row) {
   return { id: row.id, name: row.name, type: row.type || '', url: row.url || '', notes: row.notes || '' };
 }

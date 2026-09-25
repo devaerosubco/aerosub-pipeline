@@ -21,7 +21,7 @@ const ALL_TABLES = [
   'connectors', 'activity_log', 'app_settings',
   'product_categories', 'service_categories', 'services', 'company_services',
   'store_item_shares', 'quote_templates', 'quotes', 'quote_line_items',
-  'rfqs', 'rfq_items', 'rss_sources',
+  'rfqs', 'rfq_items', 'rss_sources', 'notifications',
 ];
 
 let pass = 0, fail = 0;
@@ -339,6 +339,20 @@ const FLAT = ['companies', 'company_flags', 'contacts', 'products', 'company_pro
   const cBlindUpdate = await memberC.client.from('tasks').update({ title: 'hijacked' }).eq('id', taskId).select();
   ok((cBlindUpdate.data?.length ?? 0) === 0, 'that member also cannot blind-update it (UPDATE is gated the same as SELECT)');
 
+  // Addendum item 5: the org-wide RPCs must bypass this same visibility RLS
+  // -- memberA can't SELECT taskId directly (still personal, owned by
+  // memberB, not assigned to memberA), but its owner must still show up in
+  // the by-owner count, and the sector total must match the true row count.
+  const trueTotal = (await svc.from('tasks').select('id', { count: 'exact', head: true })).count;
+  const rpcOwnerCounts = await memberA.client.rpc('task_counts_by_owner');
+  ok(!rpcOwnerCounts.error, 'member can call task_counts_by_owner()');
+  const memberBRow = (rpcOwnerCounts.data || []).find(r => r.owner_id === memberB.uid);
+  ok(!!memberBRow && memberBRow.task_count >= 1, "task_counts_by_owner() counts memberB's still-personal task even though memberA can't SELECT it directly");
+  const rpcSectorCounts = await memberA.client.rpc('task_counts_by_sector');
+  ok(!rpcSectorCounts.error, 'member can call task_counts_by_sector()');
+  const rpcTotal = (rpcSectorCounts.data || []).reduce((s, r) => s + Number(r.task_count), 0);
+  ok(rpcTotal === trueTotal, `task_counts_by_sector() total (${rpcTotal}) equals the true org-wide task count (${trueTotal}), not just what memberA can see`);
+
   await memberB.client.from('tasks').update({ assigned_to: memberC.uid }).eq('id', taskId);
   const cNowSees = await memberC.client.from('tasks').select('id').eq('id', taskId);
   ok((cNowSees.data?.length ?? 0) === 1, 'once assigned to them, that member CAN see the personal task');
@@ -382,6 +396,41 @@ const FLAT = ['companies', 'company_flags', 'contacts', 'products', 'company_pro
   ok((coNowVisible.data?.length ?? 0) === 1, 'once general, any member can see the company');
 
   await svc.from('companies').delete().eq('id', coId);
+}
+
+// --- notifications (addendum items 3+4) — own-row read + dismiss only,
+// written solely by the event-alerts-poll Edge Function (service_role) --
+{
+  const notifId = 'rls-notif-' + Date.now();
+  const insSvc = await svc.from('notifications').insert({
+    id: notifId, user_id: memberA.uid, title: 'RLS test notification',
+    ref_type: 'event', ref_id: 'rls-test-event',
+  });
+  ok(!insSvc.error, 'service_role (the Edge Function) can insert a notification');
+
+  const memberInsert = await memberA.client.from('notifications').insert({ id: crypto.randomUUID(), user_id: memberA.uid, title: 'nope' });
+  ok(!!memberInsert.error, 'member CANNOT insert a notification directly (no insert grant — Edge Function only)');
+
+  const ownerSees = await memberA.client.from('notifications').select('id').eq('id', notifId);
+  ok((ownerSees.data?.length ?? 0) === 1, 'the owning member can see their own notification');
+  const otherCannotSee = await memberB.client.from('notifications').select('id').eq('id', notifId);
+  ok((otherCannotSee.data?.length ?? 0) === 0, "a different member CANNOT see someone else's notification");
+
+  const otherDismiss = await memberB.client.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', notifId).select();
+  ok((otherDismiss.data?.length ?? 0) === 0, "a different member's dismiss is a no-op (blind update blocked, same as tasks/companies)");
+  const ownerDismiss = await memberA.client.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', notifId).select();
+  ok((ownerDismiss.data?.length ?? 0) === 1 && !!ownerDismiss.data[0].read_at, 'the owning member CAN dismiss (update read_at on) their own notification');
+
+  // No DELETE policy exists for authenticated, so this is a silent 0-row
+  // no-op, not an error (same "force RLS + no matching policy" shape as
+  // the blind-update-on-an-invisible-row case documented in HT-F) — table
+  // grants alone don't matter here, RLS is what's actually enforcing this.
+  const memberDelete = await memberA.client.from('notifications').delete().eq('id', notifId).select();
+  ok((memberDelete.data?.length ?? 0) === 0, 'member CANNOT delete a notification (no delete policy — dismiss via read_at only)');
+  const stillThere = await svc.from('notifications').select('id').eq('id', notifId).maybeSingle();
+  ok(!!stillThere.data, 'the notification really is still there after the blocked delete attempt');
+
+  await svc.from('notifications').delete().eq('id', notifId);
 }
 
 // --- company_stage_changes: select only, no client writes ----------------

@@ -16,6 +16,7 @@ import * as productsApi from './api/products.js';
 import * as activityApi from './api/activity.js';
 import * as connectorsApi from './api/connectors.js';
 import * as rssSourcesApi from './api/rssSources.js';
+import * as notificationsApi from './api/notifications.js';
 import * as eventsApi from './api/events.js';
 import * as profilesApi from './api/profiles.js';
 import * as categoriesApi from './api/categories.js';
@@ -801,14 +802,22 @@ function loadRfqEditor(rfqId){
 // Insights tab (V2 HT-G) — read-only aggregations. Reuses RFQ_DATA/DATA.tasks/
 // TEAM_ROSTER (already loaded elsewhere) plus one real COUNT query for
 // research (DATA.research is client-side paginated, would undercount).
-const INSIGHTS_DATA = { total: 0, contributors: 0, loaded: false, loading: false };
+// sectorCounts/ownerCounts: org-wide totals via the SECURITY DEFINER RPCs
+// (addendum item 5) — no longer scoped to what the viewer can see under
+// HT-F's visibility RLS, since these only ever cross grouped counts, never
+// individual task rows.
+const INSIGHTS_DATA = { total: 0, contributors: 0, sectorCounts: [], ownerCounts: [], loaded: false, loading: false };
 function loadInsightsData(){
   if (INSIGHTS_DATA.loading) return;
   INSIGHTS_DATA.loading = true;
   if (!RFQ_DATA.loaded) loadRfqData();
   if (!TEAM_ROSTER.loaded) loadTeamRoster();
-  insightsApi.researchTotals()
-    .then(({total, contributors})=>{ INSIGHTS_DATA.total = total; INSIGHTS_DATA.contributors = contributors; INSIGHTS_DATA.loaded = true; })
+  Promise.all([insightsApi.researchTotals(), insightsApi.taskCountsBySector(), insightsApi.taskCountsByOwner()])
+    .then(([{total, contributors}, sectorCounts, ownerCounts])=>{
+      INSIGHTS_DATA.total = total; INSIGHTS_DATA.contributors = contributors;
+      INSIGHTS_DATA.sectorCounts = sectorCounts; INSIGHTS_DATA.ownerCounts = ownerCounts;
+      INSIGHTS_DATA.loaded = true;
+    })
     .catch(()=>{ toast('Could not load Insights'); })
     .finally(()=>{ INSIGHTS_DATA.loading = false; renderApp(); });
 }
@@ -860,14 +869,32 @@ function daysUntil(iso){
   const d = new Date(iso+'T00:00:00');
   return Math.round((d - new Date(new Date().toDateString()))/86400000);
 }
-// V2 HT-H — client-side event alerts (PRD-v2 §8): "events starting within
-// N days", no Edge Function. 30 days gives enough lead time to actually act
-// (travel/registration), unlike the dashboard's 7-day task reminder.
+// V2 HT-H — event alerts (PRD-v2 §8). 30 days gives enough lead time to
+// actually act (travel/registration), unlike the dashboard's 7-day task
+// reminder. Must match supabase/functions/event-alerts-poll/index.ts's
+// WINDOW_DAYS — both express the same policy, one client-side (this
+// constant, only used for the Settings copy now) and one server-side (the
+// Edge Function, which actually decides what gets notified).
 const EVENT_ALERT_WINDOW_DAYS = 30;
-function upcomingAlertEvents(){
-  return DATA.events
-    .filter(e=>{ const d = daysUntil(e.startDate); return d !== null && d >= 0 && d <= EVENT_ALERT_WINDOW_DAYS; })
-    .sort((a,b)=>a.startDate.localeCompare(b.startDate));
+
+// Addendum items 3+4 — the bell now reads server-created notifications
+// (event-alerts-poll, on pg_cron) instead of computing "upcoming events"
+// itself. That earlier client-only version was always instantly accurate
+// but had no persisted per-item dismiss state and never actually notified
+// anyone who wasn't in the app; this trades a little latency (up to the
+// poll's 6h cadence) for both of those, matching the RSS connector's own
+// polling precedent.
+const NOTIFICATIONS_DATA = { items: [], loaded: false, loading: false };
+function loadNotifications(){
+  if (NOTIFICATIONS_DATA.loading) return;
+  NOTIFICATIONS_DATA.loading = true;
+  notificationsApi.listMine()
+    .then(items=>{ NOTIFICATIONS_DATA.items = items; NOTIFICATIONS_DATA.loaded = true; })
+    .catch(()=>{})
+    .finally(()=>{ NOTIFICATIONS_DATA.loading = false; renderApp(); });
+}
+function unreadNotifications(){
+  return NOTIFICATIONS_DATA.items.filter(n=>!n.readAt);
 }
 function esc(s){
   return String(s==null?'':s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -1098,23 +1125,25 @@ function viewCrumb(){
 function renderAlertBell(){
   const me = AUTH.profile;
   if (!me || me.event_alerts_enabled === false) return '';
-  const upcoming = upcomingAlertEvents();
+  if (!NOTIFICATIONS_DATA.loaded) loadNotifications();
+  const unread = unreadNotifications();
   return `
     <div class="alert-bell">
-      <button class="btn btn-ghost" id="alertBellBtn" title="Events starting within ${EVENT_ALERT_WINDOW_DAYS} days">
-        ${ICONS.bell}${upcoming.length ? `<span class="alert-badge">${upcoming.length}</span>` : ''}
+      <button class="btn btn-ghost" id="alertBellBtn" title="Notifications">
+        ${ICONS.bell}${unread.length ? `<span class="alert-badge">${unread.length}</span>` : ''}
       </button>
       ${ui.alertsOpen ? `
       <div class="alert-panel">
         <div class="row" style="justify-content:space-between;margin-bottom:8px;">
-          <b style="font-size:12.5px;">Events in the next ${EVENT_ALERT_WINDOW_DAYS} days</b>
+          <b style="font-size:12.5px;">Notifications</b>
           <button class="x" id="alertPanelClose">${ICONS.x}</button>
         </div>
-        ${upcoming.length===0 ? `<div class="empty" style="padding:10px;">${ICONS.empty}<div>Nothing coming up.</div></div>` :
-          upcoming.map(e=>`
-            <div class="needs-row" data-nav="events">
-              <span class="t">${esc(e.name)}</span>
-              <span class="d">${fmtDate(e.startDate)}</span>
+        ${!NOTIFICATIONS_DATA.loaded ? `<div class="empty" style="padding:10px;">Loading…</div>` :
+          unread.length===0 ? `<div class="empty" style="padding:10px;">${ICONS.empty}<div>Nothing new.</div></div>` :
+          unread.map(n=>`
+            <div class="needs-row"${n.refType==='event'?' data-nav="events"':''}>
+              <span class="t">${esc(n.title)}${n.body?` — ${esc(n.body)}`:''}</span>
+              <button class="x" data-dismiss-notification="${n.id}" title="Dismiss" onclick="event.stopPropagation()">${ICONS.x}</button>
             </div>
           `).join('')}
       </div>` : ''}
@@ -1136,6 +1165,14 @@ function bindShell(){
   if (alertBellBtn) alertBellBtn.addEventListener('click', ()=>{ ui.alertsOpen = !ui.alertsOpen; renderApp(); });
   const alertPanelClose = document.getElementById('alertPanelClose');
   if (alertPanelClose) alertPanelClose.addEventListener('click', ()=>{ ui.alertsOpen = false; renderApp(); });
+  document.querySelectorAll('[data-dismiss-notification]').forEach(b=>b.addEventListener('click', async ()=>{
+    const id = b.dataset.dismissNotification;
+    const n = NOTIFICATIONS_DATA.items.find(x=>x.id===id);
+    if (n) n.readAt = new Date().toISOString(); // optimistic — instant badge update
+    renderApp();
+    try{ await notificationsApi.dismiss(id); }
+    catch(e){ if (n) n.readAt = ''; renderApp(); toast('Could not dismiss — ' + (e.message || 'try again')); }
+  }));
   const refreshAllBtn = document.getElementById('refreshAllBtn');
   if (refreshAllBtn) refreshAllBtn.addEventListener('click', doRefreshAll);
   const search = document.getElementById('searchInput');
@@ -5542,11 +5579,14 @@ function bindRfqsControls(){
 }
 
 /* ============================================================
-   INSIGHTS (V2 HT-G) — read-only aggregations, no new tables. Research/RFQ
-   counts are org-wide (those tables stay flat). Task breakdowns only cover
-   what HT-F's visibility RLS lets the current viewer see — a documented
-   scope limit, not a bug: an org-wide count would need a SECURITY DEFINER
-   aggregate RPC, which wasn't built for this pass.
+   INSIGHTS (V2 HT-G) — read-only aggregations, no new tables besides the
+   two RPCs below. Research/RFQ counts are org-wide (those tables stay
+   flat). Task breakdowns were originally viewer-scoped under HT-F's
+   visibility RLS (a documented scope limit); addendum item 5 fixed that
+   with task_counts_by_sector()/task_counts_by_owner(), two SECURITY
+   DEFINER RPCs (20260925140001_task_count_rpcs.sql) that only ever cross
+   grouped counts, never individual task rows — so they give a true
+   org-wide total without leaking what HT-F was built to hide.
    ============================================================ */
 function renderInsights(){
   if (!INSIGHTS_DATA.loaded || !RFQ_DATA.loaded) return `<div class="empty" style="padding:14px;">${ICONS.empty}<div>Loading…</div></div>`;
@@ -5554,21 +5594,13 @@ function renderInsights(){
   const rfqByStatus = RFQ_STATUSES.map(s=>({ id:s, label:rfqStatusLabel(s), count: RFQ_DATA.rfqs.filter(r=>r.status===s).length }));
   const rfqMax = Math.max(...rfqByStatus.map(s=>s.count), 1);
 
-  const sectorTally = {};
-  DATA.tasks.forEach(t=>{
-    const c = companyById(t.companyId);
-    const key = c && c.sector ? c.sector : 'No sector';
-    sectorTally[key] = (sectorTally[key]||0) + 1;
-  });
-  const sectorEntries = Object.entries(sectorTally).sort((a,b)=>b[1]-a[1]);
+  // Org-wide via the SECURITY DEFINER RPCs (addendum item 5) — no longer
+  // scoped to what this viewer can see under HT-F's visibility RLS.
+  const sectorEntries = [...INSIGHTS_DATA.sectorCounts].sort((a,b)=>b.count-a.count).map(r=>[r.sector, r.count]);
   const sectorMax = Math.max(...sectorEntries.map(e=>e[1]), 1);
 
-  const ownerTally = {};
-  DATA.tasks.forEach(t=>{
-    const key = t.ownerId ? (teammateName(t.ownerId) || 'Unknown') : 'Unassigned';
-    ownerTally[key] = (ownerTally[key]||0) + 1;
-  });
-  const ownerEntries = Object.entries(ownerTally).sort((a,b)=>b[1]-a[1]);
+  const ownerEntries = [...INSIGHTS_DATA.ownerCounts].sort((a,b)=>b.count-a.count)
+    .map(r=>[r.ownerId ? (teammateName(r.ownerId) || 'Unknown') : 'Unassigned', r.count]);
   const ownerMax = Math.max(...ownerEntries.map(e=>e[1]), 1);
 
   const bidding = RFQ_DATA.rfqs.filter(r=>r.status==='bidding').length;
@@ -5600,7 +5632,6 @@ function renderInsights(){
       <div>
         <div class="card panel">
           <h3>Tasks by sector</h3>
-          <p style="font-size:11.5px;color:var(--muted);margin:0 0 8px;">Reflects only tasks visible to you — personal tasks owned by others aren't counted.</p>
           ${sectorEntries.length===0 ? `<div class="empty">${ICONS.empty}<div>No tasks yet.</div></div>` : sectorEntries.map(([k,v])=>`
             <div class="theme-bar-row">
               <div class="lbl">${esc(k)}</div>
@@ -5612,7 +5643,6 @@ function renderInsights(){
 
         <div class="card panel">
           <h3>Tasks by owner</h3>
-          <p style="font-size:11.5px;color:var(--muted);margin:0 0 8px;">Same visibility caveat as above.</p>
           ${ownerEntries.length===0 ? `<div class="empty">${ICONS.empty}<div>No tasks yet.</div></div>` : ownerEntries.map(([k,v])=>`
             <div class="theme-bar-row">
               <div class="lbl">${esc(k)}</div>

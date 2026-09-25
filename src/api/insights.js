@@ -16,3 +16,18 @@ export async function researchTotals() {
   const contributors = new Set((data || []).map(r => r.created_by).filter(Boolean));
   return { total: count || 0, contributors: contributors.size };
 }
+
+// Addendum item 5 — org-wide task counts, bypassing HT-F's per-row
+// visibility RLS via a SECURITY DEFINER RPC (20260925140001). Only grouped
+// counts ever cross this boundary, never individual task rows, so it
+// doesn't leak what HT-F was built to hide.
+export async function taskCountsBySector() {
+  const { data, error } = await supabase.rpc('task_counts_by_sector');
+  if (error) throw error;
+  return (data || []).map(r => ({ sector: r.sector, count: Number(r.task_count) }));
+}
+export async function taskCountsByOwner() {
+  const { data, error } = await supabase.rpc('task_counts_by_owner');
+  if (error) throw error;
+  return (data || []).map(r => ({ ownerId: r.owner_id || '', count: Number(r.task_count) }));
+}

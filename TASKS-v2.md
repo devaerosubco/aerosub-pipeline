@@ -597,16 +597,59 @@ scoped tightly and documented as a deliberate exception.
   mapped its tokens, created a quote, exported, and re-opened the
   downloaded file with pizzip to confirm the substitution actually landed
   (no leftover `{{tokens}}`, real values present).
-- True scheduled push notifications (§8) — the event-alert bell is
-  client-side, on-load only; a push channel would need a second Edge
-  Function, not built.
-- Per-item alert dismissal (§8) — the bell always reflects current
-  upcoming events; a "seen" record per user per event would need its own
-  table, out of scope.
-- An org-wide (RLS-bypassing) task-count aggregate for Insights (§7) — the
-  sector/owner panels only reflect what the viewer can see under HT-F's
-  visibility rules; a `SECURITY DEFINER` RPC would remove that caveat but
-  wasn't built.
+- ~~True scheduled push notifications (§8)~~ — **built 2026-09-25**
+  (addendum items 3+4, done together — the delivery mechanism items 4's
+  dismissal rides on). Extends ROADMAP.md's own already-documented §2
+  "Task reminders" blueprint (a `notifications` table + an Edge Function on
+  `pg_cron` + a header bell polling it), scoped to event alerts rather than
+  task reminders. `public.notifications` (RLS: a member reads/dismisses —
+  updates `read_at` on — only their own rows; no insert/delete grant at
+  all, rows are written solely by the Edge Function's service_role);
+  `supabase/functions/event-alerts-poll` (pure logic in `build.js`, 11 unit
+  tests) cross-products every opted-in member with every event inside the
+  30-day window and upserts on `(user_id, ref_type, ref_id)` with
+  `ignoreDuplicates: true` — a conflicting pair is skipped outright, so a
+  re-poll can never resurrect a dismissed notification. Best-effort email
+  digest via Resend (already this project's Auth SMTP provider) if
+  `RESEND_API_KEY` is set as an Edge Function secret — a graceful no-op
+  without it, so this works in dev with zero extra configuration. The bell
+  (HT-H) now reads this table instead of computing "upcoming events"
+  itself — a deliberate trade of a little latency (up to the poll's 6h
+  cadence, matching rss-poll's own cadence) for both real server-side
+  delivery and persisted per-item dismiss state.
+  ↳ note: found the same "index.js is invisible to `supabase functions
+  serve`, must be index.ts" issue rss-poll's own note already documented —
+  applied the same fix immediately this time.
+  ↳ note (test-script bug, not the app): the verification script's own
+  Mailpit email lookup broke on GoTrue's email-lowercasing — comparing a
+  mixed-case generated address against Mailpit's (correctly lowercased)
+  stored one never matched. Fixed by normalizing the generated email to
+  lowercase at creation, matching what GoTrue will actually store.
+  Verified: 11 unit tests; an RLS block proving a member can't insert or
+  delete a notification (RLS denies it silently — no matching policy under
+  FORCE ROW LEVEL SECURITY is a 0-row no-op, not an error, same shape as
+  HT-F's blind-update case — an early version of this test wrongly expected
+  a hard error and had to be corrected) but can dismiss their own; and a
+  live run that actually invoked the deployed Edge Function twice (not a
+  simulation) — first call created one notification per opted-in member for
+  a seeded event, second call (idempotency) created zero — followed by a
+  real-browser pass confirming the bell badge, panel contents, and dismiss
+  (both the optimistic UI update and the persisted `read_at`).
+- ~~An org-wide (RLS-bypassing) task-count aggregate for Insights (§7)~~ —
+  **built 2026-09-25** (addendum item 5). Two `SECURITY DEFINER` RPCs,
+  `task_counts_by_sector()`/`task_counts_by_owner()`
+  (`20260925140001_task_count_rpcs.sql`), gated on `is_member()` like
+  `is_member()`/`is_admin()` themselves — they only ever return grouped
+  counts, never individual task rows, so they don't leak what HT-F was
+  built to hide (who owns which specific personal task) while finally
+  giving Insights' task panels a true org-wide total. The "only reflects
+  what's visible to you" caveat is gone from the UI — it's no longer true.
+  Verified: an RLS test seeds a still-personal task owned by a member who
+  isn't the caller, confirms the caller can't `SELECT` it directly, then
+  confirms the RPC's total still includes it and matches a service-role
+  hand-count exactly; a real-browser pass reproduced the same proof through
+  the actual Insights tab UI (a second, non-signed-in member's personal
+  task counted in the totals a first member's browser session displayed).
 
 **Addendum, 2026-09-25 (not part of the original 8-item request) — CSV bulk
 upload + column sorting for Companies and Contacts.** User-requested "quick
