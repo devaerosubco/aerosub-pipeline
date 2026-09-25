@@ -14,7 +14,7 @@ Companion doc: [PRD-v2.md](PRD-v2.md). Refs like "PRD-v2 §5" point into it. Thi
 | HT-D — Create: Quotes/Proforma/Commercials + templates | ✅ 2026-09-21 (`.html` only — `.docx` deliberately not attempted, see PRD-v2 §4) |
 | HT-E — RFQ Manager | ✅ 2026-09-24, verified live (db:check 28 tables/106 policies, test:rls 89/89, Playwright 11/11) |
 | HT-F — Personal vs. general Tasks & Companies | ✅ 2026-09-24, verified live (db:check, test:rls 105/105, 2-browser-session Playwright 9/9) |
-| HT-G — Analytics tab | pending |
+| HT-G — Insights tab | ✅ 2026-09-25, verified live (db:check/test:rls 105/105 unaffected — schema-free, Playwright 13/13) |
 | HT-H — Alerts + RSS feed connector | pending |
 
 Each queued Heavy Task below is written to the same level of detail V1's
@@ -460,17 +460,32 @@ it as originally planned" over the smaller "tasks only" option).
   second member, and assigning it to them makes it appear in *their own*
   Personal tab. 9/9, zero console/page errors.
 
-## HT-G. Analytics tab
+## HT-G. Insights tab
 
 **Acceptance criteria:** PRD-v2 §7. Research/RFQ/task counts, aggregated,
-read-only. Distinct label from the existing "Reports" export tab (confirm the
-name with the user — "Analytics" proposed).
+read-only. Distinct label from the existing "Reports" export tab (confirmed
+with the user — "Insights", not "Analytics").
 
-- [ ] Confirm the tab name with the user (naming collision, PRD-v2 §7).
-- [ ] Aggregation queries (research count by contributor, RFQ counts by
-  status, task counts by sector/user) — no new tables.
-- [ ] Tests: a real-browser pass confirming the numbers match a hand-count on
-  the seed data.
+- [x] Confirm the tab name with the user (naming collision, PRD-v2 §7) —
+  user chose "Insights" via AskUserQuestion.
+- [x] Aggregation queries (research count by contributor, RFQ counts by
+  status, task counts by sector/user) — no new tables, no migration.
+  `src/api/insights.js`'s `researchTotals()` is the only new query (a real
+  COUNT, since `DATA.research` is client-paginated); RFQ/task breakdowns
+  reuse already-loaded `RFQ_DATA`/`DATA.tasks`/`TEAM_ROSTER`.
+  ↳ note: task panels are scoped to what the *viewer* can see under HT-F's
+  visibility RLS (own + assigned + general) — documented as a deliberate
+  scope limit in PRD-v2 §7, not a bug. RFQ/research numbers stay org-wide
+  since those tables were never brought into HT-F's model.
+- [x] Tests: a real-browser pass confirming the numbers match a hand-count on
+  the seed data. Bootstrapped a fresh confirmed member, hand-counted via a
+  service-role client + the member's own RLS-scoped session, asserted every
+  stat tile and the sector/owner bar-sums against it (12/12 visible tasks
+  matched exactly). 13/13 checks green, zero console/page errors.
+- [x] `vitest` 81/81 (no new unit tests needed — `insights.js` is a thin
+  pass-through query, matching the project's convention of not
+  unit-testing `main.js` UI wiring). `db:check`/`test:rls` re-run for
+  confidence (schema-free change) — 105/105, unaffected.
 
 ## HT-H. Alerts + RSS feed connector
 

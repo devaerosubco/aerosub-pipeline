@@ -23,6 +23,7 @@ import * as storeSharesApi from './api/storeShares.js';
 import * as quoteTemplatesApi from './api/quoteTemplates.js';
 import * as quotesApi from './api/quotes.js';
 import * as rfqsApi from './api/rfqs.js';
+import * as insightsApi from './api/insights.js';
 import { detectTokens, buildQuoteFieldValues, renderTemplate, buildQuoteMarkdown, computeLineTotals, QUOTE_FIELDS } from './quoteFields.js';
 import { uploadFile, signedUrl, removeFile, downloadText } from './storage.js';
 import { csvToObjects } from './csv.js';
@@ -54,6 +55,7 @@ const ICONS = {
   doc:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><path d="M5.5 2.5h6l3 3v12h-9z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M11.5 2.5v3h3" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M7.3 10h5.4M7.3 12.4h5.4M7.3 14.8h3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
   docPlus:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><path d="M5.5 2.5h6l3 3v12h-9z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M11.5 2.5v3h3" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 11.5h4M10 9.5v4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
   outbox:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><path d="M3 11.5V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-4.5" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M10 2.5v9M6.3 8.2L10 11.5l3.7-3.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 11.5h4l1.3 2h3.4l1.3-2h4" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
+  barChart:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><path d="M3 17V3M3 17h14" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><rect x="5.5" y="10.5" width="2.6" height="6.5" stroke="currentColor" stroke-width="1.2"/><rect x="9.7" y="6.5" width="2.6" height="10.5" stroke="currentColor" stroke-width="1.2"/><rect x="13.9" y="3.5" width="2.6" height="13.5" stroke="currentColor" stroke-width="1.2"/></svg>',
   scroll:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><rect x="2" y="6" width="16" height="8" rx="2" stroke="currentColor" stroke-width="1.3"/><path d="M6 10h.01M9.5 10h.01M13 10h5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
   building2:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><rect x="2.5" y="7" width="6" height="10" stroke="currentColor" stroke-width="1.3"/><rect x="11.5" y="3" width="6" height="14" stroke="currentColor" stroke-width="1.3"/><path d="M14 6.3h1M14 9h1M14 11.7h1" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
   calendar:'<svg viewBox="0 0 20 20" width="14" height="14" fill="none"><rect x="2.5" y="4" width="15" height="13.5" rx="1.8" stroke="currentColor" stroke-width="1.3"/><path d="M2.5 8h15M6.3 2.3v3M13.7 2.3v3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M6 11h2M9.5 11h2M13 11h1M6 14h2M9.5 14h2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
@@ -784,6 +786,21 @@ function loadRfqEditor(rfqId){
     .finally(()=>{ RFQ_EDITOR.loading = false; if (ui.drawerRfqId===rfqId) renderRfqDrawer(); });
 }
 
+// Insights tab (V2 HT-G) — read-only aggregations. Reuses RFQ_DATA/DATA.tasks/
+// TEAM_ROSTER (already loaded elsewhere) plus one real COUNT query for
+// research (DATA.research is client-side paginated, would undercount).
+const INSIGHTS_DATA = { total: 0, contributors: 0, loaded: false, loading: false };
+function loadInsightsData(){
+  if (INSIGHTS_DATA.loading) return;
+  INSIGHTS_DATA.loading = true;
+  if (!RFQ_DATA.loaded) loadRfqData();
+  if (!TEAM_ROSTER.loaded) loadTeamRoster();
+  insightsApi.researchTotals()
+    .then(({total, contributors})=>{ INSIGHTS_DATA.total = total; INSIGHTS_DATA.contributors = contributors; INSIGHTS_DATA.loaded = true; })
+    .catch(()=>{ toast('Could not load Insights'); })
+    .finally(()=>{ INSIGHTS_DATA.loading = false; renderApp(); });
+}
+
 // The per-item Share section shown in the product/service drawers.
 const ITEM_SHARE = { key: null, teammates: [], shares: [], loaded: false, loading: false };
 function loadItemShares(kind, id){
@@ -942,6 +959,7 @@ function renderApp(){
     {id:'solutions', label:'Store', icon:ICONS.bolt, count:n.products},
     {id:'create', label:'Create', icon:ICONS.docPlus, count:n.quotes},
     {id:'rfqs', label:'RFQ Manager', icon:ICONS.outbox, count:n.rfqs},
+    {id:'insights', label:'Insights', icon:ICONS.barChart},
     {id:'reports', label:'Reports', icon:ICONS.doc},
     {id:'settings', label:'Settings', icon:ICONS.shield},
   ];
@@ -1002,10 +1020,10 @@ function renderApp(){
 }
 
 function viewTitle(){
-  return ({dashboard:'Overview', companies:'Companies', contacts:'Contacts', tasks:'Plan', solutions:'Store', create:'Create', rfqs:'RFQ Manager', competitors:'Competition Dashboard', research:'Research', reports:'Report Builder', events:'Events', settings:'Settings'})[ui.view];
+  return ({dashboard:'Overview', companies:'Companies', contacts:'Contacts', tasks:'Plan', solutions:'Store', create:'Create', rfqs:'RFQ Manager', insights:'Insights', competitors:'Competition Dashboard', research:'Research', reports:'Report Builder', events:'Events', settings:'Settings'})[ui.view];
 }
 function viewCrumb(){
-  return ({dashboard:'Pipeline / Overview', companies:'Pipeline / Accounts', contacts:'Pipeline / People', tasks:'Pipeline / Actions', solutions:'Pipeline / Catalog', create:'Pipeline / Quotes', rfqs:'Pipeline / RFQs', competitors:'Pipeline / Market Watch', research:'Pipeline / Clips', reports:'Pipeline / Export', events:'Pipeline / Events', settings:'Pipeline / Admin'})[ui.view];
+  return ({dashboard:'Pipeline / Overview', companies:'Pipeline / Accounts', contacts:'Pipeline / People', tasks:'Pipeline / Actions', solutions:'Pipeline / Catalog', create:'Pipeline / Quotes', rfqs:'Pipeline / RFQs', insights:'Pipeline / Insights', competitors:'Pipeline / Market Watch', research:'Pipeline / Clips', reports:'Pipeline / Export', events:'Pipeline / Events', settings:'Pipeline / Admin'})[ui.view];
 }
 
 function bindShell(){
@@ -1097,6 +1115,7 @@ function renderView(){
   else if (ui.view==='solutions') mount.innerHTML = renderSolutions();
   else if (ui.view==='create') mount.innerHTML = renderCreate();
   else if (ui.view==='rfqs') mount.innerHTML = renderRfqs();
+  else if (ui.view==='insights') mount.innerHTML = renderInsights();
   else if (ui.view==='competitors') mount.innerHTML = renderCompetitors();
   else if (ui.view==='research') mount.innerHTML = renderResearch();
   else if (ui.view==='reports') mount.innerHTML = renderReports();
@@ -5275,6 +5294,94 @@ function bindRfqsControls(){
 }
 
 /* ============================================================
+   INSIGHTS (V2 HT-G) — read-only aggregations, no new tables. Research/RFQ
+   counts are org-wide (those tables stay flat). Task breakdowns only cover
+   what HT-F's visibility RLS lets the current viewer see — a documented
+   scope limit, not a bug: an org-wide count would need a SECURITY DEFINER
+   aggregate RPC, which wasn't built for this pass.
+   ============================================================ */
+function renderInsights(){
+  if (!INSIGHTS_DATA.loaded || !RFQ_DATA.loaded) return `<div class="empty" style="padding:14px;">${ICONS.empty}<div>Loading…</div></div>`;
+
+  const rfqByStatus = RFQ_STATUSES.map(s=>({ id:s, label:rfqStatusLabel(s), count: RFQ_DATA.rfqs.filter(r=>r.status===s).length }));
+  const rfqMax = Math.max(...rfqByStatus.map(s=>s.count), 1);
+
+  const sectorTally = {};
+  DATA.tasks.forEach(t=>{
+    const c = companyById(t.companyId);
+    const key = c && c.sector ? c.sector : 'No sector';
+    sectorTally[key] = (sectorTally[key]||0) + 1;
+  });
+  const sectorEntries = Object.entries(sectorTally).sort((a,b)=>b[1]-a[1]);
+  const sectorMax = Math.max(...sectorEntries.map(e=>e[1]), 1);
+
+  const ownerTally = {};
+  DATA.tasks.forEach(t=>{
+    const key = t.ownerId ? (teammateName(t.ownerId) || 'Unknown') : 'Unassigned';
+    ownerTally[key] = (ownerTally[key]||0) + 1;
+  });
+  const ownerEntries = Object.entries(ownerTally).sort((a,b)=>b[1]-a[1]);
+  const ownerMax = Math.max(...ownerEntries.map(e=>e[1]), 1);
+
+  const bidding = RFQ_DATA.rfqs.filter(r=>r.status==='bidding').length;
+  const won = RFQ_DATA.rfqs.filter(r=>r.status==='won').length;
+
+  return `
+    <div class="grid-tiles">
+      <div class="card tile"><div class="n tabular">${INSIGHTS_DATA.total}</div><div class="l">Research clips</div></div>
+      <div class="card tile"><div class="n tabular">${INSIGHTS_DATA.contributors}</div><div class="l">Research contributors</div></div>
+      <div class="card tile"><div class="n tabular">${RFQ_DATA.rfqs.length}</div><div class="l">RFQs total</div></div>
+      <div class="card tile"><div class="n tabular">${bidding}</div><div class="l">RFQs bidding</div></div>
+      <div class="card tile"><div class="n tabular">${won}</div><div class="l">RFQs won</div></div>
+    </div>
+
+    <div class="dash-grid">
+      <div>
+        <div class="card panel">
+          <h3>RFQs by status</h3>
+          ${rfqByStatus.map(s=>`
+            <div class="theme-bar-row">
+              <div class="lbl">${esc(s.label)}</div>
+              <div class="track"><div class="fill" style="width:${s.count/rfqMax*100}%"></div></div>
+              <div class="val tabular">${s.count}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+
+      <div>
+        <div class="card panel">
+          <h3>Tasks by sector</h3>
+          <p style="font-size:11.5px;color:var(--muted);margin:0 0 8px;">Reflects only tasks visible to you — personal tasks owned by others aren't counted.</p>
+          ${sectorEntries.length===0 ? `<div class="empty">${ICONS.empty}<div>No tasks yet.</div></div>` : sectorEntries.map(([k,v])=>`
+            <div class="theme-bar-row">
+              <div class="lbl">${esc(k)}</div>
+              <div class="track"><div class="fill" style="width:${v/sectorMax*100}%"></div></div>
+              <div class="val tabular">${v}</div>
+            </div>
+          `).join('')}
+        </div>
+
+        <div class="card panel">
+          <h3>Tasks by owner</h3>
+          <p style="font-size:11.5px;color:var(--muted);margin:0 0 8px;">Same visibility caveat as above.</p>
+          ${ownerEntries.length===0 ? `<div class="empty">${ICONS.empty}<div>No tasks yet.</div></div>` : ownerEntries.map(([k,v])=>`
+            <div class="theme-bar-row">
+              <div class="lbl">${esc(k)}</div>
+              <div class="track"><div class="fill" style="width:${v/ownerMax*100}%"></div></div>
+              <div class="val tabular">${v}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+function bindInsightsControls(){
+  if (!INSIGHTS_DATA.loaded) loadInsightsData();
+}
+
+/* ============================================================
    VIEW BINDING DISPATCH
    ============================================================ */
 function bindView(){
@@ -5284,6 +5391,7 @@ function bindView(){
   if (ui.view==='solutions') bindSolutionsControls();
   if (ui.view==='create') bindCreateControls();
   if (ui.view==='rfqs') bindRfqsControls();
+  if (ui.view==='insights') bindInsightsControls();
   if (ui.view==='competitors') bindCompetitorsControls();
   if (ui.view==='research') bindResearchControls();
   if (ui.view==='reports') bindReportsControls();

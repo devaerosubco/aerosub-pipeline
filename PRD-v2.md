@@ -333,14 +333,47 @@ company" — everything else in V1 and V2 alike stays flat.
   `db:check`'s two new structural assertions that the read policies are
   actually visibility-gated, not silently still flat — see TASKS-v2.md.
 
-## 7. Phase 6 — Analytics tab (queued)
+## 7. Phase 6 — Insights tab (HT-G, shipped)
 
-Read-only aggregations over existing + Phase-4/5 tables: research count by
-contributor, RFQ counts by status, task counts by sector/user. No new tables.
-**Naming**: the existing "Reports" tab (account-report export, `src/main.js`
-`renderReports`) already owns that label — this phase needs a distinct one
-(proposed: "Analytics") to avoid colliding with it; confirm with the user when
-this phase starts.
+Read-only aggregations over existing + Phase-4/5 tables, no new tables and no
+migration. **Naming**: the existing "Reports" tab (account-report export,
+`src/main.js` `renderReports`) already owned that label, so this phase needed
+a distinct one — the user chose **"Insights"** over "Analytics" or a custom
+name, via AskUserQuestion.
+
+`src/api/insights.js` (new, small): `researchTotals()` runs a real
+`count:'exact', head:true` query against `research_clips` plus a
+`created_by`-column fetch deduped client-side into a contributor count —
+deliberately *not* derived from `DATA.research.length`, since that array is
+client-side paginated (`RESEARCH_PAGE`) and would silently undercount past
+200 rows. RFQ and task aggregations need no extra query: `RFQ_DATA.rfqs`,
+`DATA.tasks`, and `TEAM_ROSTER` are already loaded elsewhere and are grouped
+client-side directly in `renderInsights()` (`src/main.js`).
+
+Five stat tiles (Research clips, Contributors, RFQs total, Bidding, Won) plus
+three panels: "RFQs by status" (`RFQ_STATUSES`/`rfqStatusLabel`, complete —
+`rfqs` stays flat, no visibility gating), "Tasks by sector"
+(`companyById(t.companyId)?.sector || 'No sector'`), "Tasks by owner"
+(`teammateName(t.ownerId) || 'Unassigned'`). Reused the dashboard's existing
+`.theme-bar-row`/`.grid-tiles`/`.card.panel` markup rather than inventing a
+new bar-chart component.
+
+**Documented scope limit, not a bug**: because of HT-F's per-row visibility,
+the two task panels only reflect tasks the *current viewer* can see (own +
+assigned + general) — a personal task owned by someone else who hasn't
+assigned it to you is invisible here too, same as everywhere else in the app.
+An org-wide total would need a `SECURITY DEFINER` aggregate RPC bypassing
+RLS; deliberately not built for this pass, and both panels carry an in-UI
+caveat saying so. RFQ and research numbers have no such caveat — those two
+tables were never brought into HT-F's visibility model and stay fully flat.
+
+Verified live: `db:check`/`test:rls` unaffected (schema-free — no new
+migration, no policy changes; only the two HT-F visibility assertions
+already existed and still pass). A real-browser Playwright pass bootstrapped
+a fresh confirmed member and cross-checked every stat tile against a
+service-role hand-count, plus verified the sector/owner bar totals sum to
+exactly what that member's own RLS-scoped `select` on `tasks` returns
+(12/12) — 13/13 checks green, zero console/page errors.
 
 ## 8. Phase 7 — Alerts + RSS feed connector (queued)
 
