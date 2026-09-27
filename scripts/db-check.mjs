@@ -115,5 +115,10 @@ ok(notifUnique.includes('UNIQUE'), 'notifications has a unique (user_id, ref_typ
 const notifCron = psql(`select active from cron.job where jobname='event-alerts-poll-every-6h';`);
 ok(notifCron === 't', 'event-alerts-poll-every-6h cron job is registered and active');
 
+// 12. RFQ document attachment columns.
+const rfqDocCols = psql(`select column_name from information_schema.columns
+  where table_schema='public' and table_name='rfqs' and column_name in ('document_path','document_name');`).split('\n').filter(Boolean);
+ok(rfqDocCols.length === 2, `rfqs has document_path/document_name columns (got ${rfqDocCols.length})`);
+
 console.log(`\ndb-check: ${fail === 0 ? 'OK' : 'FAILED'}  (${pass} pass, ${fail} fail)`);
 process.exit(fail === 0 ? 0 : 1);

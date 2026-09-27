@@ -203,12 +203,14 @@ export function rfqFromRow(row) {
     id: row.id, title: row.title, reference: row.reference || '', companyId: row.company_id || '',
     status: row.status, assignedTo: row.assigned_to || '', parentRfqId: row.parent_rfq_id || '',
     notes: row.notes || '', createdAt: row.created_at || '',
+    documentPath: row.document_path || '', documentName: row.document_name || '',
   };
 }
 export function rfqToRow(r) {
   return {
     title: r.title, reference: r.reference || null, company_id: r.companyId || null,
     parent_rfq_id: r.parentRfqId || null, notes: r.notes || null,
+    document_path: r.documentPath || null, document_name: r.documentName || null,
   };
 }
 export function rfqItemFromRow(row) {

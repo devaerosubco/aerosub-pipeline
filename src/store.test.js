@@ -376,6 +376,16 @@ describe('rfqs (V2 HT-E)', () => {
     expect(back.status).toBe('draft');
   });
 
+  it('round-trips the attached RFQ document path + original filename', () => {
+    const row = rfqToRow({ title: 'X', documentPath: 'rfq-documents/abc.pdf', documentName: 'Amni RFQ 7972.pdf' });
+    expect(row.document_path).toBe('rfq-documents/abc.pdf');
+    expect(row.document_name).toBe('Amni RFQ 7972.pdf');
+    const back = rfqFromRow({ id: 'r1', status: 'draft', ...row });
+    expect(back.documentPath).toBe('rfq-documents/abc.pdf');
+    expect(back.documentName).toBe('Amni RFQ 7972.pdf');
+    expect(rfqToRow({ title: 'Y' }).document_path).toBeNull(); // no document -> null, not ''
+  });
+
   it('rfqToRow never emits status or assigned_to (admin-only, set via dedicated setters)', () => {
     const row = rfqToRow({ title: 'X', status: 'won', assignedTo: 'someone' });
     expect(row.status).toBeUndefined();

@@ -32,6 +32,12 @@ export async function setCompany(id, companyId) { await write('rfqs', 'update', 
 export async function setNotes(id, notes) { await write('rfqs', 'update', { row: { notes: notes || null }, match: { id } }); }
 export async function setStatus(id, status) { await write('rfqs', 'update', { row: { status }, match: { id } }); }
 export async function setAssignee(id, assignedTo) { await write('rfqs', 'update', { row: { assigned_to: assignedTo || null }, match: { id } }); }
+// The client's original RFQ document (storage path + original filename).
+// Pass nulls to detach; deleting the storage object is the caller's job,
+// since a branched RFQ can share the same file.
+export async function setDocument(id, path, name) {
+  await write('rfqs', 'update', { row: { document_path: path || null, document_name: name || null }, match: { id } });
+}
 
 export async function remove(id) {
   await write('rfqs', 'delete', { match: { id } }); // rfq_items cascade in the DB
@@ -68,6 +74,8 @@ export async function branch(source, items) {
   const cloned = await create({
     title: `${source.title} (branch)`, reference: source.reference, companyId: source.companyId,
     parentRfqId: source.id, notes: source.notes,
+    // Same client document, so the branch points at the same stored file.
+    documentPath: source.documentPath, documentName: source.documentName,
   });
   for (const it of items) {
     await addItem({ ...it, rfqId: cloned.id });

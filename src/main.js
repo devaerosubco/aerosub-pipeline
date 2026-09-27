@@ -5278,6 +5278,98 @@ function rfqStatusChipClass(s){
 }
 function rfqById(id){ return RFQ_DATA.rfqs.find(r=>r.id===id); }
 
+// The client's own RFQ document. PDFs and images open in the browser's
+// viewer; Word/Excel files download (a browser can't render those inline).
+const RFQ_DOC_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg';
+// A branch points at the same stored file as its source, so only delete the
+// storage object once no other RFQ still references it.
+async function removeRfqDocIfUnused(path, exceptRfqId){
+  if (!path) return;
+  if (RFQ_DATA.rfqs.some(x=>x.id!==exceptRfqId && x.documentPath===path)) return;
+  await removeFile(path).catch(()=>{});
+}
+async function openRfqDocument(r, asDownload){
+  const url = await signedUrl(r.documentPath, asDownload ? (r.documentName || 'rfq-document') : undefined);
+  if (url) window.open(url, '_blank'); else toast('Could not open the document');
+}
+
+function rfqItemRows(items){
+  return items.map((it, i)=>{
+    const costTotal = it.qty * it.unitCost;
+    const unitPrice = it.unitCost * it.markupMultiplier;
+    return { ...it, n: i+1, costTotal, unitPrice, lineTotal: unitPrice * it.qty };
+  });
+}
+function rfqTotals(rows){
+  return {
+    cost: rows.reduce((s,r)=>s+r.costTotal, 0),
+    quote: rows.reduce((s,r)=>s+r.lineTotal, 0),
+  };
+}
+const fmtMoney = n => Number(n||0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// Full-width, read-only view of every item in the RFQ — the drawer is too
+// narrow to show all columns at once. Includes internal vendor columns;
+// this never leaves the app (the client-facing export drops them).
+function openRfqItemsTableModal(r){
+  const rows = rfqItemRows(RFQ_EDITOR.items);
+  const t = rfqTotals(rows);
+  openModal(`
+    <div class="row" style="justify-content:space-between;margin-bottom:12px;">
+      <h3 style="margin:0;">${esc(r.title)} — all items (${rows.length})</h3>
+      <div class="row" style="gap:6px;">
+        <button class="btn btn-sm btn-ghost" id="mItemsCsv" ${rows.length?'':'disabled'}>${ICONS.download} CSV</button>
+        <button class="x" id="mCancel">${ICONS.x}</button>
+      </div>
+    </div>
+    ${rows.length===0 ? `<div class="empty">${ICONS.empty}<div>No items on this RFQ yet.</div></div>` : `
+    <div class="tablewrap">
+      <table class="rfq-items">
+        <thead><tr>
+          <th>#</th><th>Item</th><th>Type</th><th>Vendor</th><th>Verified</th>
+          <th class="num">Qty</th><th class="num">Unit cost</th><th class="num">Cost total</th>
+          <th class="num">Markup ×</th><th class="num">Unit price</th><th class="num">Line total</th>
+        </tr></thead>
+        <tbody>
+          ${rows.map(it=>`<tr>
+            <td class="sub">${it.n}</td>
+            <td>${esc(it.description)}</td>
+            <td><span class="sub">${esc(it.itemType)}</span></td>
+            <td>${it.vendorName?esc(it.vendorName):'<span class="sub">—</span>'}</td>
+            <td>${it.vendorVerified?'<span class="chip chip-good">Yes</span>':'<span class="sub">No</span>'}</td>
+            <td class="num tabular">${it.qty}</td>
+            <td class="num tabular">${fmtMoney(it.unitCost)}</td>
+            <td class="num tabular">${fmtMoney(it.costTotal)}</td>
+            <td class="num tabular">${it.markupMultiplier}</td>
+            <td class="num tabular">${fmtMoney(it.unitPrice)}</td>
+            <td class="num tabular">${fmtMoney(it.lineTotal)}</td>
+          </tr>`).join('')}
+        </tbody>
+        <tfoot><tr>
+          <td colspan="7">Totals</td>
+          <td class="num tabular">${fmtMoney(t.cost)}</td>
+          <td></td><td></td>
+          <td class="num tabular">${fmtMoney(t.quote)}</td>
+        </tr></tfoot>
+      </table>
+    </div>`}
+  `, body=>{
+    body.querySelector('#mCancel').onclick = closeModal;
+    const csvBtn = body.querySelector('#mItemsCsv');
+    if (csvBtn) csvBtn.onclick = ()=>{
+      const q = v => `"${String(v ?? '').replace(/"/g,'""')}"`;
+      const lines = [
+        ['#','Item','Type','Vendor','Verified','Qty','Unit cost','Cost total','Markup','Unit price','Line total'].join(','),
+        ...rows.map(it=>[it.n, q(it.description), it.itemType, q(it.vendorName), it.vendorVerified?'yes':'no',
+          it.qty, it.unitCost, it.costTotal.toFixed(2), it.markupMultiplier, it.unitPrice.toFixed(2), it.lineTotal.toFixed(2)].join(',')),
+        ['','Totals','','','','','',t.cost.toFixed(2),'','',t.quote.toFixed(2)].join(','),
+      ];
+      const safe = (r.reference || r.title).replace(/[^a-z0-9-_]+/gi,'-').slice(0,60);
+      downloadFile(`rfq-items-${safe}.csv`, lines.join('\n'), 'text/csv');
+    };
+  }, { wide: true });
+}
+
 function renderRfqs(){
   if (!RFQ_DATA.loaded) return `<div class="empty" style="padding:14px;">${ICONS.empty}<div>Loading…</div></div>`;
   const list = RFQ_DATA.rfqs;
@@ -5290,7 +5382,7 @@ function renderRfqs(){
         ${list.map(r=>{
           const co = companyById(r.companyId);
           return `<tr data-open-rfq="${r.id}" style="cursor:pointer;">
-            <td class="name-cell">${esc(r.title)}${r.parentRfqId?' <span class="sub">(branch)</span>':''}</td>
+            <td class="name-cell">${esc(r.title)}${r.parentRfqId?' <span class="sub">(branch)</span>':''}${r.documentPath?` <span class="sub" title="Document attached: ${esc(r.documentName)}">${ICONS.clip}</span>`:''}</td>
             <td>${co?esc(co.name):'<span class="sub">—</span>'}</td>
             <td><span class="chip ${rfqStatusChipClass(r.status)}">${esc(rfqStatusLabel(r.status))}</span></td>
             <td>${r.assignedTo?esc(teammateName(r.assignedTo)):'<span class="sub">unassigned</span>'}</td>
@@ -5309,6 +5401,7 @@ function openAddRfqModal(){
     <div class="field"><label>Title</label><input id="mTitle" placeholder="e.g. Amni RFQ 7972"></div>
     <div class="field"><label>Reference (optional)</label><input id="mRef" placeholder="e.g. RFQ 7972"></div>
     <div class="field"><label>Client (optional)</label><select id="mCo"><option value="">— none yet —</option>${companyOptions}</select></div>
+    <div class="field"><label>RFQ document (optional — PDF, Word, Excel or image)</label><input type="file" id="mDoc" accept="${RFQ_DOC_ACCEPT}"></div>
     <div class="modal-actions">
       <button class="btn" id="mCancel">Cancel</button>
       <button class="btn btn-primary" id="mSave">Create RFQ</button>
@@ -5318,13 +5411,22 @@ function openAddRfqModal(){
     body.querySelector('#mSave').onclick = async ()=>{
       const title = body.querySelector('#mTitle').value.trim();
       if (!title){ toast('Title required'); return; }
+      const file = body.querySelector('#mDoc').files[0];
       const save = body.querySelector('#mSave'); save.disabled = true;
+      let documentPath = '';
       try{
-        const saved = await rfqsApi.create({ title, reference: body.querySelector('#mRef').value.trim(), companyId: body.querySelector('#mCo').value });
+        if (file) documentPath = await uploadFile(file, 'rfq-documents');
+        const saved = await rfqsApi.create({
+          title, reference: body.querySelector('#mRef').value.trim(), companyId: body.querySelector('#mCo').value,
+          documentPath, documentName: file ? file.name : '',
+        });
         RFQ_DATA.rfqs.unshift(saved);
         closeModal(); renderApp();
         openRfqDrawer(saved.id);
-      }catch(e){ toast('Could not create — ' + (e.message || 'try again')); save.disabled = false; }
+      }catch(e){
+        if (documentPath) removeFile(documentPath).catch(()=>{}); // don't orphan the upload
+        toast('Could not create — ' + (e.message || 'try again')); save.disabled = false;
+      }
     };
   });
 }
@@ -5402,6 +5504,24 @@ function renderRfqDrawer(){
     </div>
     <div class="drawer-body">
       <div class="dsec">
+        <div class="dsec-head"><h4>RFQ document</h4></div>
+        ${r.documentPath ? `
+        <div class="rfq-doc">
+          ${ICONS.doc}
+          <span class="name" title="${esc(r.documentName)}">${esc(r.documentName || 'RFQ document')}</span>
+          <button class="btn btn-sm btn-primary" id="viewRfqDocBtn">${ICONS.eye} View</button>
+          <button class="btn btn-sm btn-ghost" id="downloadRfqDocBtn">${ICONS.download}</button>
+        </div>
+        <div class="small-btn-row" style="margin-top:8px;">
+          <label class="btn btn-sm btn-ghost" style="cursor:pointer;">Replace<input type="file" id="rfqDocFile" accept="${RFQ_DOC_ACCEPT}" hidden></label>
+          <button class="btn btn-sm btn-ghost" id="removeRfqDocBtn">Remove</button>
+        </div>
+        <p class="sub" style="margin-top:6px;">PDFs and images open in the browser; Word/Excel files download.</p>` : `
+        <p class="sub" style="margin-bottom:8px;">Attach the client's original RFQ (PDF, Word, Excel or image) so everyone works from the same source.</p>
+        <label class="btn btn-sm" style="cursor:pointer;">${ICONS.upload} Attach document<input type="file" id="rfqDocFile" accept="${RFQ_DOC_ACCEPT}" hidden></label>`}
+      </div>
+
+      <div class="dsec">
         <div class="dsec-head"><h4>Details</h4></div>
         <div class="add-inline"><input id="rTitle" value="${esc(r.title)}" placeholder="Title"></div>
         <div class="add-inline"><input id="rRef" value="${esc(r.reference||'')}" placeholder="Reference"></div>
@@ -5424,23 +5544,41 @@ function renderRfqDrawer(){
       </div>
 
       <div class="dsec">
-        <div class="dsec-head"><h4>Items (${items.length})</h4></div>
-        ${!ready ? `<div class="sub">Loading…</div>` : items.length===0 ? `<div class="empty" style="padding:14px;">${ICONS.empty}<div>No items yet — research a vendor and add a product or service below.</div></div>` :
-          items.map(it=>`
-            <div class="rec-card">
-              <div class="row" style="justify-content:space-between;gap:8px;">
-                <div class="rname">${esc(it.description)}${it.vendorVerified?` <span class="chip chip-good" style="font-size:9px;">Verified vendor</span>`:''}</div>
-                <button class="x" data-del-rfqitem="${it.id}" style="background:none;border:none;color:var(--teal-strong);cursor:pointer;">${ICONS.x}</button>
-              </div>
-              <div class="row" style="gap:10px;margin-top:6px;flex-wrap:wrap;align-items:center;">
-                <label class="sub">Vendor <input value="${esc(it.vendorName||'')}" data-rfqitem-field="vendorName" data-rfqitem-id="${it.id}" style="width:120px;"></label>
-                <label class="sub" style="display:flex;align-items:center;gap:4px;"><input type="checkbox" ${it.vendorVerified?'checked':''} data-rfqitem-field="vendorVerified" data-rfqitem-id="${it.id}"> Verified</label>
-                <label class="sub">Qty <input type="number" min="0.01" step="1" value="${it.qty}" data-rfqitem-field="qty" data-rfqitem-id="${it.id}" style="width:55px;"></label>
-                <label class="sub">Cost <input type="number" min="0" step="0.01" value="${it.unitCost}" data-rfqitem-field="unitCost" data-rfqitem-id="${it.id}" style="width:85px;"></label>
-                <label class="sub">Markup × <input type="number" min="0" step="0.01" value="${it.markupMultiplier}" data-rfqitem-field="markupMultiplier" data-rfqitem-id="${it.id}" style="width:65px;"></label>
-              </div>
-            </div>
-          `).join('')}
+        <div class="dsec-head" style="display:flex;justify-content:space-between;align-items:center;">
+          <h4>Items (${items.length})</h4>
+          ${ready && items.length ? `<button class="btn btn-sm btn-ghost" id="viewRfqItemsTableBtn">View full table</button>` : ''}
+        </div>
+        ${!ready ? `<div class="sub">Loading…</div>` : items.length===0 ? `<div class="empty" style="padding:14px;">${ICONS.empty}<div>No items yet — research a vendor and add a product or service below.</div></div>` : (()=>{
+          const rows = rfqItemRows(items);
+          const t = rfqTotals(rows);
+          return `
+          <div class="tablewrap">
+            <table class="rfq-items">
+              <thead><tr>
+                <th>#</th><th>Item / vendor</th><th class="num">Qty</th><th class="num">Unit cost</th><th class="num">Markup ×</th><th class="num">Line total</th><th></th>
+              </tr></thead>
+              <tbody>
+                ${rows.map(it=>`<tr>
+                  <td class="sub">${it.n}</td>
+                  <td>
+                    <div>${esc(it.description)}${it.vendorVerified?` <span class="chip chip-good" style="font-size:9px;">Verified</span>`:''}</div>
+                    <input class="vendor-in" value="${esc(it.vendorName||'')}" placeholder="Vendor…" data-rfqitem-field="vendorName" data-rfqitem-id="${it.id}">
+                    <label class="sub" style="display:flex;align-items:center;gap:4px;margin-top:3px;"><input type="checkbox" ${it.vendorVerified?'checked':''} data-rfqitem-field="vendorVerified" data-rfqitem-id="${it.id}"> Verified vendor</label>
+                  </td>
+                  <td class="num"><input type="number" min="0.01" step="1" value="${it.qty}" data-rfqitem-field="qty" data-rfqitem-id="${it.id}" style="width:55px;"></td>
+                  <td class="num"><input type="number" min="0" step="0.01" value="${it.unitCost}" data-rfqitem-field="unitCost" data-rfqitem-id="${it.id}" style="width:85px;"></td>
+                  <td class="num"><input type="number" min="0" step="0.01" value="${it.markupMultiplier}" data-rfqitem-field="markupMultiplier" data-rfqitem-id="${it.id}" style="width:60px;"></td>
+                  <td class="num tabular">${fmtMoney(it.lineTotal)}</td>
+                  <td><button class="x" data-del-rfqitem="${it.id}" title="Remove item">${ICONS.x}</button></td>
+                </tr>`).join('')}
+              </tbody>
+              <tfoot>
+                <tr><td colspan="5">Cost total</td><td class="num tabular">${fmtMoney(t.cost)}</td><td></td></tr>
+                <tr><td colspan="5">Quote total (with markup)</td><td class="num tabular">${fmtMoney(t.quote)}</td><td></td></tr>
+              </tfoot>
+            </table>
+          </div>`;
+        })()}
         ${ready ? `<div class="add-inline"><input id="rfqItemSearch" placeholder="Search products & services to add…"></div><div id="rfqItemResults"></div>` : ''}
       </div>
 
@@ -5464,10 +5602,47 @@ function bindRfqDrawer(r){
       try{
         await rfqsApi.remove(r.id);
         RFQ_DATA.rfqs = RFQ_DATA.rfqs.filter(x=>x.id!==r.id);
+        await removeRfqDocIfUnused(r.documentPath, r.id);
         closeDrawer(); renderApp(); toast('Deleted');
       }catch(e){ toast('Could not delete — ' + (e.message || 'try again')); }
     });
   });
+
+  const viewRfqDocBtn = document.getElementById('viewRfqDocBtn');
+  if (viewRfqDocBtn) viewRfqDocBtn.addEventListener('click', ()=>openRfqDocument(r, false));
+  const downloadRfqDocBtn = document.getElementById('downloadRfqDocBtn');
+  if (downloadRfqDocBtn) downloadRfqDocBtn.addEventListener('click', ()=>openRfqDocument(r, true));
+  const rfqDocFile = document.getElementById('rfqDocFile');
+  if (rfqDocFile) rfqDocFile.addEventListener('change', async ()=>{
+    const file = rfqDocFile.files[0]; if (!file) return;
+    const oldPath = r.documentPath;
+    let path = '';
+    try{
+      path = await uploadFile(file, 'rfq-documents');
+      await rfqsApi.setDocument(r.id, path, file.name);
+      r.documentPath = path; r.documentName = file.name;
+      await removeRfqDocIfUnused(oldPath, r.id);
+      logActivity(oldPath ? 'Replaced an RFQ document' : 'Attached an RFQ document', r.title);
+      renderApp(); openRfqDrawer(r.id); toast(oldPath ? 'Document replaced' : 'Document attached');
+    }catch(e){
+      if (path) removeFile(path).catch(()=>{});
+      toast('Could not upload — ' + (e.message || 'try again'));
+    }
+  });
+  const removeRfqDocBtn = document.getElementById('removeRfqDocBtn');
+  if (removeRfqDocBtn) removeRfqDocBtn.addEventListener('click', ()=>{
+    openConfirmModal(`Remove "${r.documentName || 'the RFQ document'}" from this RFQ?`, async ()=>{
+      const oldPath = r.documentPath;
+      try{
+        await rfqsApi.setDocument(r.id, null, null);
+        r.documentPath = ''; r.documentName = '';
+        await removeRfqDocIfUnused(oldPath, r.id);
+        renderApp(); openRfqDrawer(r.id); toast('Document removed');
+      }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+    });
+  });
+  const viewRfqItemsTableBtn = document.getElementById('viewRfqItemsTableBtn');
+  if (viewRfqItemsTableBtn) viewRfqItemsTableBtn.addEventListener('click', ()=>openRfqItemsTableModal(r));
   document.getElementById('saveRfqDetailsBtn').addEventListener('click', async ()=>{
     const title = document.getElementById('rTitle').value.trim();
     if (!title){ toast('Title required'); return; }
@@ -5685,9 +5860,12 @@ function bindView(){
 /* ============================================================
    MODALS
    ============================================================ */
-function openModal(html, onMount){
+// opts.wide: a table-sized modal instead of the default form-sized one. Set
+// (or cleared) on every open so a wide modal never leaks into the next one.
+function openModal(html, onMount, opts){
   const scrim = document.getElementById('modalScrim');
   const body = document.getElementById('modalBody');
+  body.classList.toggle('modal-wide', !!(opts && opts.wide));
   body.innerHTML = html;
   scrim.classList.add('open');
   scrim.onclick = (e)=>{ if(e.target===scrim) closeModal(); };

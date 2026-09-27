@@ -701,3 +701,28 @@ unresolved throughout HT-F/G/H rather than merged or force-pushed. All V2
 work above is committed locally, not pushed — resolving the divergence and
 deciding how/when to push is a separate decision for the user, not part of
 this build.
+
+**Addendum, 2026-09-28 — RFQ document attachment + items table.** User
+asked that an RFQ carry the client's actual RFQ document and show a proper
+table of its items. `rfqs.document_path`/`document_name`
+(`20260928120001_rfq_documents.sql`) — the file lives in the existing
+private `store-attachments` bucket under `rfq-documents/`, same
+signed-URL pattern as product datasheets. Attach at creation (New RFQ
+modal) or later from the drawer; **View** opens the file in the browser
+(PDF/images render, Word/Excel download), **Download** serves it under its
+original filename, plus Replace/Remove. A branched RFQ points at the same
+file, so storage objects are only deleted once no other RFQ references
+them (Replace, Remove and RFQ delete all respect this). The drawer's item
+cards became an editable table (qty/cost/markup/vendor/verified inline,
+cost total + quote total footer) and a **View full table** modal shows all
+11 columns with CSV export. The RFQ list shows an attachment icon.
+↳ note: `lock_rfq_admin_fields` only guards status/assigned_to, so members
+can attach documents — now locked in by an RLS test. Also relaxed
+`rls-test.mjs`'s "service_role sees exactly 10 companies" to `>= 10`: the
+local DB now holds real usage (173 companies at the time), and the
+assertion's intent is only that service_role bypasses RLS.
+Verified: vitest 116/116, test:rls 129/129, db:check column assertion, and
+a real-browser pass (18 checks, run 3x clean) covering attach-at-create,
+view (inline) vs download (original filename), in-table edits persisting,
+totals, the full-table modal + CSV, replace/remove deleting the old
+storage object, and RFQ delete cleaning up its file.

@@ -20,9 +20,12 @@ export async function uploadFile(file, folder) {
   return path;
 }
 
-export async function signedUrl(path) {
+// downloadAs: when set, the URL serves the file as an attachment with that
+// filename (Content-Disposition) instead of opening it in the browser.
+export async function signedUrl(path, downloadAs) {
   if (!path) return '';
-  const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(path, SIGNED_URL_TTL);
+  const opts = downloadAs ? { download: downloadAs } : undefined;
+  const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(path, SIGNED_URL_TTL, opts);
   if (error) return '';
   return data?.signedUrl || '';
 }

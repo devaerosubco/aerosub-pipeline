@@ -42,7 +42,10 @@ for (const t of ALL_TABLES) {
 const svc = createClient(URL_, SERVICE, { auth: { persistSession: false } });
 {
   const { count } = await svc.from('companies').select('*', { count: 'exact', head: true });
-  ok(count === 10, `service_role sees all companies (${count})`);
+  // >= the 10 seeded rows, not === 10: the point is that service_role
+  // bypasses RLS (sees every row, personal ones included), and a dev DB in
+  // real use legitimately holds more than the seed.
+  ok(count >= 10, `service_role sees all companies (${count})`);
 }
 
 // --- helpers to make a confirmed member without a browser ------------------
@@ -301,6 +304,12 @@ const FLAT = ['companies', 'company_flags', 'contacts', 'products', 'company_pro
 
   const memberEditsTitle = await memberB.client.from('rfqs').update({ title: 'RLS test RFQ (edited)' }).eq('id', rfqId);
   ok(!memberEditsTitle.error, "member can edit an RFQ's ordinary fields (title)");
+
+  // Attaching the client's RFQ document is a normal member action — the
+  // admin-lock trigger must only guard status/assigned_to, not these.
+  const memberAttachesDoc = await memberB.client.from('rfqs')
+    .update({ document_path: 'rfq-documents/rls-test.pdf', document_name: 'RLS test.pdf' }).eq('id', rfqId).select();
+  ok(!memberAttachesDoc.error && memberAttachesDoc.data?.[0]?.document_name === 'RLS test.pdf', 'member (non-admin) can attach an RFQ document');
 
   const memberPublishes = await memberB.client.from('rfqs').update({ status: 'published' }).eq('id', rfqId);
   ok(!!memberPublishes.error, "member CANNOT change an RFQ's status (admin-lock trigger)");
