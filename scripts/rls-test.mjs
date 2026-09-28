@@ -103,6 +103,8 @@ const FLAT = ['companies', 'company_flags', 'contacts', 'products', 'company_pro
   ok(!insC.error, 'member can insert a company (V2 HT-F: lands personal, owned by them)');
   const updC = await memberA.client.from('companies').update({ notes: 'edited by member' }).eq('id', cid);
   ok(!updC.error, 'the owner can update their own (personal) company');
+  const updGeo = await memberA.client.from('companies').update({ country: 'NG', website: 'example.com' }).eq('id', cid).select();
+  ok(!updGeo.error && updGeo.data?.[0]?.country === 'NG' && updGeo.data?.[0]?.website === 'example.com', 'a member can set country/website on their own company (quick fix items 1+2)');
   const delC = await memberA.client.from('companies').delete().eq('id', cid);
   ok(!delC.error, 'the owner can delete their own (personal) company');
 }
@@ -327,6 +329,41 @@ const FLAT = ['companies', 'company_flags', 'contacts', 'products', 'company_pro
   ok(!delRfq.error, 'admin can delete an RFQ');
   const itemGone = (await svc.from('rfq_items').select('id').eq('id', itemId).maybeSingle()).data;
   ok(itemGone === null, 'deleting an RFQ cascades its items');
+}
+
+// --- RFQ branch visibility (quick fix item 3b): a branch (parent_rfq_id
+// set) is private to its creator + admins ------------------------------
+{
+  const memberOutsider = await makeMember('RFQ Outsider');
+  const origId = 'rls-rfq-orig-' + Date.now();
+  await svc.from('rfqs').insert({ id: origId, title: 'RLS branch-visibility original', created_by: memberB.uid });
+
+  const branchId = 'rls-rfq-branch-' + Date.now();
+  const insBranch = await memberB.client.from('rfqs').insert({ id: branchId, title: 'RLS branch', parent_rfq_id: origId }).select();
+  ok((insBranch.data?.length ?? 0) === 1, 'member can create a branch (insert with parent_rfq_id set)');
+  const branchCreatedBy = (await svc.from('rfqs').select('created_by').eq('id', branchId).single()).data.created_by;
+  ok(branchCreatedBy === memberB.uid, 'created_by defaults to the inserting member (no client-side value needed)');
+
+  const itemId2 = crypto.randomUUID();
+  await svc.from('rfq_items').insert({ id: itemId2, rfq_id: branchId, item_type: 'product', item_id: 'drone', description: 'Private branch item' });
+
+  const origVisible = await memberOutsider.client.from('rfqs').select('id').eq('id', origId);
+  ok((origVisible.data?.length ?? 0) === 1, 'the original (non-branch) RFQ stays visible to everyone');
+  const branchInvisible = await memberOutsider.client.from('rfqs').select('id').eq('id', branchId);
+  ok((branchInvisible.data?.length ?? 0) === 0, "a branch is invisible to a member who isn't its creator");
+  const branchItemsInvisible = await memberOutsider.client.from('rfq_items').select('id').eq('id', itemId2);
+  ok((branchItemsInvisible.data?.length ?? 0) === 0, "the outsider also can't read the branch's items directly");
+  const outsiderBlindUpdate = await memberOutsider.client.from('rfqs').update({ title: 'hijacked' }).eq('id', branchId).select();
+  ok((outsiderBlindUpdate.data?.length ?? 0) === 0, 'the outsider cannot blind-update a branch they cannot see');
+  const outsiderBlindDelete = await memberOutsider.client.from('rfqs').delete().eq('id', branchId).select();
+  ok((outsiderBlindDelete.data?.length ?? 0) === 0, 'the outsider cannot blind-delete a branch they cannot see');
+
+  const creatorSeesOwn = await memberB.client.from('rfqs').select('id').eq('id', branchId);
+  ok((creatorSeesOwn.data?.length ?? 0) === 1, 'the creator CAN see their own branch');
+  const adminSeesAll = await memberA.client.from('rfqs').select('id').eq('id', branchId); // memberA is still admin here
+  ok((adminSeesAll.data?.length ?? 0) === 1, 'an admin can see every branch, not just their own');
+
+  await svc.from('rfqs').delete().in('id', [origId, branchId]);
 }
 
 // --- tasks/companies visibility (V2 HT-F) — the one non-flat RLS design --

@@ -16,6 +16,16 @@ export const QUOTE_FIELDS = [
   { key: 'total', label: 'Total' },
   { key: 'notes', label: 'Notes' },
   { key: 'prepared_by', label: 'Prepared by' },
+  // .docx only — map a token INSIDE a Word table row to one of these and
+  // src/docx.js clones that whole row once per line item (a real,
+  // bordered table row, not the single-line items_table above). Has no
+  // effect in an .html template.
+  { key: 'item_n', label: '[.docx table row] Line #' },
+  { key: 'item_description', label: '[.docx table row] Item description' },
+  { key: 'item_qty', label: '[.docx table row] Qty' },
+  { key: 'item_unit_cost', label: '[.docx table row] Unit cost' },
+  { key: 'item_unit_price', label: '[.docx table row] Unit price (with markup)' },
+  { key: 'item_line_total', label: '[.docx table row] Line total' },
 ];
 
 const TOKEN_RE = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
@@ -91,6 +101,20 @@ export function buildQuoteFieldValues({ quote, lineItems, companyName, preparedB
     notes: format === 'plain' ? (quote.notes || '') : escapeHtml(quote.notes || ''),
     prepared_by: format === 'plain' ? (preparedBy || '') : escapeHtml(preparedBy || ''),
   };
+}
+
+// .docx only — one pre-formatted row per line item, for docx.js's
+// repeating-table-row feature. Money values carry the currency code, same
+// convention as buildQuoteFieldValues's scalar totals.
+export function buildQuoteItemRows(lineItems, currency) {
+  return computeLineTotals(lineItems).map((r, i) => ({
+    item_n: String(i + 1),
+    item_description: r.description,
+    item_qty: String(r.qty),
+    item_unit_cost: money(r.unitCost, currency),
+    item_unit_price: money(r.unitPrice, currency),
+    item_line_total: money(r.lineTotal, currency),
+  }));
 }
 
 // Replaces every {{token}} per field_map ({token: fieldKey}). An unmapped

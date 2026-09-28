@@ -120,5 +120,19 @@ const rfqDocCols = psql(`select column_name from information_schema.columns
   where table_schema='public' and table_name='rfqs' and column_name in ('document_path','document_name');`).split('\n').filter(Boolean);
 ok(rfqDocCols.length === 2, `rfqs has document_path/document_name columns (got ${rfqDocCols.length})`);
 
+// 13. Quick-fix batch, 2026-09-28: companies.country/website exist;
+// rfqs.created_by now has a default (needed for branch-visibility RLS to
+// have anything to compare against); rfq_visible() exists.
+const coCols = psql(`select column_name from information_schema.columns
+  where table_schema='public' and table_name='companies' and column_name in ('country','website');`).split('\n').filter(Boolean);
+ok(coCols.length === 2, `companies has country/website columns (got ${coCols.length})`);
+
+const createdByDefault = psql(`select column_default from information_schema.columns
+  where table_schema='public' and table_name='rfqs' and column_name='created_by';`);
+ok(createdByDefault.includes('uid'), 'rfqs.created_by now defaults to auth.uid()');
+
+const rfqVisibleFn = psql(`select proname from pg_proc where proname='rfq_visible' and pronamespace='public'::regnamespace;`);
+ok(rfqVisibleFn === 'rfq_visible', 'rfq_visible() function exists');
+
 console.log(`\ndb-check: ${fail === 0 ? 'OK' : 'FAILED'}  (${pass} pass, ${fail} fail)`);
 process.exit(fail === 0 ? 0 : 1);

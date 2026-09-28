@@ -26,7 +26,7 @@ import * as quoteTemplatesApi from './api/quoteTemplates.js';
 import * as quotesApi from './api/quotes.js';
 import * as rfqsApi from './api/rfqs.js';
 import * as insightsApi from './api/insights.js';
-import { detectTokens, buildQuoteFieldValues, renderTemplate, buildQuoteMarkdown, computeLineTotals, QUOTE_FIELDS } from './quoteFields.js';
+import { detectTokens, buildQuoteFieldValues, renderTemplate, buildQuoteMarkdown, computeLineTotals, buildQuoteItemRows, QUOTE_FIELDS } from './quoteFields.js';
 import { detectDocxTokens, renderDocx } from './docx.js';
 import { uploadFile, signedUrl, removeFile, downloadText, downloadArrayBuffer } from './storage.js';
 import { csvToObjects } from './csv.js';
@@ -661,6 +661,9 @@ const ui = {
   companyLayout:'board',
   companyFilter:{priority:'', stage:''},
   competitorFilter:{modality:'', threat:''},
+  contactFilter:{country:'', sector:'', hasEmail:false, hasLinkedin:false, hasWebsite:false},
+  rfqLayout:'table',      // 'table' | 'cards'
+  rfqTab:'general',       // 'general' (originals) | 'branches' (private — RLS already scopes what's visible)
   search:'',
   storeTab:'dashboard',    // 'dashboard' | 'products' | 'services' — Store sub-nav (V2 HT-B/C)
   storeShowArchived:false,
@@ -1752,6 +1755,14 @@ function closeDrawer(){
   ui.drawerEventId = null;
   ui.drawerQuoteId = null;
   ui.drawerRfqId = null;
+  // Some drawer actions (e.g. adding/removing a product/service image) only
+  // ever re-rendered the drawer itself, leaving the underlying list/grid
+  // behind it stale until some unrelated event happened to trigger a
+  // re-render — found while wiring up Store card thumbnails, but the class
+  // of bug isn't specific to images. Closing the drawer is the one point
+  // every drawer flow passes through, so fixing it here covers all of them
+  // at once instead of auditing every individual save handler.
+  renderView();
 }
 function renderDrawer(){
   const c = companyById(ui.drawerCompanyId);
@@ -1782,6 +1793,10 @@ function renderDrawer(){
         <div class="add-inline"><input id="coName" value="${esc(c.name)}" placeholder="Company name"></div>
         <div class="add-inline"><input id="coType" value="${esc(c.type)}" placeholder="Type — e.g. Indigenous — Private E&amp;P"></div>
         <div class="add-inline"><input id="coSector" list="coSectorOptions" value="${esc(c.sector||'')}" placeholder="Sector — e.g. Oil &amp; Gas — Upstream">${sectorDatalist('coSectorOptions')}</div>
+        <div class="row" style="gap:8px;">
+          <input id="coCountry" value="${esc(c.country||'')}" placeholder="Country code — NG, US…" maxlength="3" style="width:110px;text-transform:uppercase;">
+          <input id="coWebsite" value="${esc(c.website||'')}" placeholder="Website — example.com" style="flex:1;">
+        </div>
         <textarea class="notes-area" id="coSummary" placeholder="Short profile…">${esc(c.summary)}</textarea>
         <div class="small-btn-row"><button class="btn btn-sm btn-primary" id="saveIdentityBtn">Save details</button></div>
       </div>
@@ -1929,10 +1944,12 @@ function bindDrawer(c){
     if (!name){ toast('Name required'); return; }
     const type = document.getElementById('coType').value.trim();
     const sector = document.getElementById('coSector').value.trim();
+    const country = document.getElementById('coCountry').value.trim().toUpperCase();
+    const website = document.getElementById('coWebsite').value.trim();
     const summary = document.getElementById('coSummary').value.trim();
     try{
-      await companiesApi.updateIdentity(c.id, {name, type, summary, sector});
-      c.name = name; c.type = type; c.sector = sector; c.summary = summary;
+      await companiesApi.updateIdentity(c.id, {name, type, summary, sector, country, website});
+      c.name = name; c.type = type; c.sector = sector; c.country = country; c.website = website; c.summary = summary;
       toast('Details saved'); renderApp(); openDrawer(c.id);
     }catch(e){ toast('Could not save — ' + (e.message || 'try again')); }
   });
@@ -2204,9 +2221,9 @@ function renderProductDrawer(){
         </div>
 
         <div style="margin-top:12px;">
-          <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">Images</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">Images — the first one is the featured thumbnail shown on the Store card</div>
           <div class="bullets" id="imgList">
-            ${(p.imagePaths||[]).map((path,i)=>`<div class="bullet solution"><span style="flex:1;">${esc(path.split('/').pop())}</span><button class="btn btn-sm btn-ghost" data-view-img="${esc(path)}">View</button><button class="x" data-del-img="${i}">${ICONS.x}</button></div>`).join('')}
+            ${(p.imagePaths||[]).map((path,i)=>`<div class="bullet solution"><span style="flex:1;">${i===0?`<span class="chip chip-gold" style="font-size:9px;">Featured</span> `:''}${esc(path.split('/').pop())}</span>${i>0?`<button class="btn btn-sm btn-ghost" data-feature-img="${i}">★ Feature</button>`:''}<button class="btn btn-sm btn-ghost" data-view-img="${esc(path)}">View</button><button class="x" data-del-img="${i}">${ICONS.x}</button></div>`).join('')}
           </div>
           <div class="add-inline"><input type="file" id="imageFile" accept="image/*"></div>
         </div>
@@ -2350,6 +2367,14 @@ function bindProductDrawer(p){
       p.imagePaths = next; renderProductDrawer(); toast('Image removed');
     }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
   }));
+  document.querySelectorAll('[data-feature-img]').forEach(b=>b.addEventListener('click', async ()=>{
+    const i = +b.dataset.featureImg;
+    const next = [p.imagePaths[i], ...p.imagePaths.filter((_,idx)=>idx!==i)];
+    try{
+      await productsApi.setImages(p.id, next);
+      p.imagePaths = next; renderProductDrawer(); renderView(); toast('Featured image updated');
+    }catch(e){ toast('Could not update — ' + (e.message || 'try again')); }
+  }));
   document.querySelectorAll('[data-view-img]').forEach(b=>b.addEventListener('click', async ()=>{
     const url = await signedUrl(b.dataset.viewImg);
     if (url) window.open(url, '_blank'); else toast('Could not open image');
@@ -2466,9 +2491,9 @@ function renderServiceDrawer(){
         <div class="small-btn-row"><button class="btn btn-sm btn-primary" id="savePriceBtn">Save store details</button></div>
 
         <div style="margin-top:12px;">
-          <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">Images</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">Images — the first one is the featured thumbnail shown on the Store card</div>
           <div class="bullets" id="imgList">
-            ${(s.imagePaths||[]).map((path,i)=>`<div class="bullet solution"><span style="flex:1;">${esc(path.split('/').pop())}</span><button class="btn btn-sm btn-ghost" data-view-img="${esc(path)}">View</button><button class="x" data-del-img="${i}">${ICONS.x}</button></div>`).join('')}
+            ${(s.imagePaths||[]).map((path,i)=>`<div class="bullet solution"><span style="flex:1;">${i===0?`<span class="chip chip-gold" style="font-size:9px;">Featured</span> `:''}${esc(path.split('/').pop())}</span>${i>0?`<button class="btn btn-sm btn-ghost" data-feature-img="${i}">★ Feature</button>`:''}<button class="btn btn-sm btn-ghost" data-view-img="${esc(path)}">View</button><button class="x" data-del-img="${i}">${ICONS.x}</button></div>`).join('')}
           </div>
           <div class="add-inline"><input type="file" id="imageFile" accept="image/*"></div>
         </div>
@@ -2573,6 +2598,14 @@ function bindServiceDrawer(s){
       await removeFile(path);
       s.imagePaths = next; renderServiceDrawer(); toast('Image removed');
     }catch(e){ toast('Could not remove — ' + (e.message || 'try again')); }
+  }));
+  document.querySelectorAll('[data-feature-img]').forEach(b=>b.addEventListener('click', async ()=>{
+    const i = +b.dataset.featureImg;
+    const next = [s.imagePaths[i], ...s.imagePaths.filter((_,idx)=>idx!==i)];
+    try{
+      await servicesApi.setImages(s.id, next);
+      s.imagePaths = next; renderServiceDrawer(); renderView(); toast('Featured image updated');
+    }catch(e){ toast('Could not update — ' + (e.message || 'try again')); }
   }));
   document.querySelectorAll('[data-view-img]').forEach(b=>b.addEventListener('click', async ()=>{
     const url = await signedUrl(b.dataset.viewImg);
@@ -4361,37 +4394,71 @@ function allContacts(){
 }
 function filteredContacts(){
   const q = ui.search.trim().toLowerCase();
+  const f = ui.contactFilter;
   return allContacts().filter(ct=>{
-    if (!q) return true;
     const co = companyById(ct.companyId);
-    return ct.name.toLowerCase().includes(q) || ct.pos.toLowerCase().includes(q) || (co && co.name.toLowerCase().includes(q));
+    if (q && !(ct.name.toLowerCase().includes(q) || ct.pos.toLowerCase().includes(q) || (co && co.name.toLowerCase().includes(q)))) return false;
+    if (f.country && co?.country !== f.country) return false;
+    if (f.sector && co?.sector !== f.sector) return false;
+    if (f.hasEmail && !ct.email) return false;
+    if (f.hasLinkedin && !ct.linkedin) return false;
+    if (f.hasWebsite && !co?.website) return false;
+    return true;
   });
 }
 // Click-to-sort (any column); defaults to the old fixed order (verified
 // first, then name) until the user picks a column.
 function contactSortValue(ct, col){
+  const co = companyById(ct.companyId);
   switch(col){
     case 'name': return ct.name.toLowerCase();
-    case 'company': return (companyById(ct.companyId)?.name || '').toLowerCase();
+    case 'company': return (co?.name || '').toLowerCase();
     case 'position': return (ct.pos||'').toLowerCase();
     case 'email': return (ct.email||'').toLowerCase();
     case 'phone': return (ct.phone||'').toLowerCase();
     case 'linkedin': return ct.linkedin ? 1 : 0;
+    case 'sector': return (co?.sector||'').toLowerCase();
+    case 'country': return (co?.country||'').toLowerCase();
     case 'followup': return ct.nextFollowUp || null;
     default: return null;
   }
 }
+// Distinct, sorted values already on companies — filter dropdown options.
+function distinctCompanyValues(field){
+  return [...new Set(DATA.companies.map(c=>c[field]).filter(Boolean))].sort();
+}
 function renderContacts(){
+  const all = allContacts();
   const base = filteredContacts();
   const rows = ui.contactsSort.col === 'name' && ui.contactsSort.dir === 'asc'
     ? [...base].sort((a,b)=> (b.verified-a.verified) || a.name.localeCompare(b.name)) // default view: verified first
     : sortRows(base, ui.contactsSort, contactSortValue);
+  const countries = distinctCompanyValues('country');
+  const sectors = distinctCompanyValues('sector');
+  const f = ui.contactFilter;
   return `
+  <div class="toolbar" style="flex-wrap:wrap;">
+    <select class="select" id="filterCountry">
+      <option value="">All locations</option>
+      ${countries.map(c=>`<option value="${esc(c)}" ${f.country===c?'selected':''}>${esc(c)}</option>`).join('')}
+    </select>
+    <select class="select" id="filterSector">
+      <option value="">All sectors</option>
+      ${sectors.map(s=>`<option value="${esc(s)}" ${f.sector===s?'selected':''}>${esc(s)}</option>`).join('')}
+    </select>
+    <label class="chip-toggle"><input type="checkbox" id="filterHasEmail" ${f.hasEmail?'checked':''}> With email</label>
+    <label class="chip-toggle"><input type="checkbox" id="filterHasLinkedin" ${f.hasLinkedin?'checked':''}> With LinkedIn</label>
+    <label class="chip-toggle"><input type="checkbox" id="filterHasWebsite" ${f.hasWebsite?'checked':''}> With website</label>
+    ${(f.country||f.sector||f.hasEmail||f.hasLinkedin||f.hasWebsite) ? `<button class="btn btn-sm btn-ghost" id="clearContactFiltersBtn">Clear filters</button>` : ''}
+    <span style="margin-left:auto;font-size:11.5px;color:var(--muted)">${rows.length} of ${all.length} contacts</span>
+  </div>
   <div class="card tablewrap">
     <table>
       <thead><tr>
         ${sortTh(ui.contactsSort,'name','Name')}
         ${sortTh(ui.contactsSort,'company','Company')}
+        ${sortTh(ui.contactsSort,'sector','Sector')}
+        ${sortTh(ui.contactsSort,'country','Location')}
         ${sortTh(ui.contactsSort,'position','Position')}
         ${sortTh(ui.contactsSort,'email','Email')}
         ${sortTh(ui.contactsSort,'phone','Phone')}
@@ -4404,6 +4471,8 @@ function renderContacts(){
         return `<tr data-open-contact="${ct.id}">
           <td class="name-cell">${esc(ct.name)} ${ct.verified?`<span class="verified-tick">✓</span>`:''}</td>
           <td>${co?esc(co.name):''}</td>
+          <td><span class="sub">${co?.sector?esc(co.sector):''}</span></td>
+          <td>${co?.country?`<span class="chip chip-teal" style="font-size:9px;">${esc(co.country)}</span>`:''}</td>
           <td><span class="sub">${esc(ct.pos)}</span></td>
           <td>${ct.email?esc(ct.email):'<span class="sub">Not public</span>'}</td>
           <td>${ct.phone?esc(ct.phone):''}</td>
@@ -4420,6 +4489,18 @@ function bindContactsControls(){
   document.querySelectorAll('[data-open-contact]').forEach(row=>{
     row.addEventListener('click', ()=>openEditContactModal(row.dataset.openContact));
   });
+  const fc = document.getElementById('filterCountry');
+  if (fc) fc.addEventListener('change', e=>{ ui.contactFilter.country=e.target.value; renderView(); });
+  const fsec = document.getElementById('filterSector');
+  if (fsec) fsec.addEventListener('change', e=>{ ui.contactFilter.sector=e.target.value; renderView(); });
+  const fe = document.getElementById('filterHasEmail');
+  if (fe) fe.addEventListener('change', e=>{ ui.contactFilter.hasEmail=e.target.checked; renderView(); });
+  const fl = document.getElementById('filterHasLinkedin');
+  if (fl) fl.addEventListener('change', e=>{ ui.contactFilter.hasLinkedin=e.target.checked; renderView(); });
+  const fw = document.getElementById('filterHasWebsite');
+  if (fw) fw.addEventListener('change', e=>{ ui.contactFilter.hasWebsite=e.target.checked; renderView(); });
+  const clearBtn = document.getElementById('clearContactFiltersBtn');
+  if (clearBtn) clearBtn.addEventListener('click', ()=>{ ui.contactFilter={country:'',sector:'',hasEmail:false,hasLinkedin:false,hasWebsite:false}; renderView(); });
   bindSortHeaders(ui.contactsSort, renderView);
 }
 
@@ -4637,6 +4718,23 @@ function renderStoreGrid(kind){
   `;
 }
 
+// path -> signed URL | 'loading'. Module-level, session-scoped — a fresh
+// signed URL is cheap enough to just re-request next session rather than
+// track its TTL here.
+const STORE_THUMB_CACHE = new Map();
+function loadStoreThumb(path){
+  if (STORE_THUMB_CACHE.has(path)) return;
+  STORE_THUMB_CACHE.set(path, 'loading');
+  signedUrl(path).then(url=>{ STORE_THUMB_CACHE.set(path, url || null); renderView(); }).catch(()=>{ STORE_THUMB_CACHE.set(path, null); renderView(); });
+}
+function storeThumbCell(s){
+  const path = (s.imagePaths||[])[0];
+  if (!path) return `<div class="store-thumb store-thumb-empty">${ICONS.bolt}</div>`;
+  const cached = STORE_THUMB_CACHE.get(path);
+  if (cached === undefined) loadStoreThumb(path);
+  if (cached && cached !== 'loading') return `<img class="store-thumb" src="${cached}" alt="">`;
+  return `<div class="store-thumb store-thumb-empty">${ICONS.bolt}</div>`;
+}
 function renderStoreCards(list, kind, categories){
   return `<div class="sol-grid">
     ${list.map(s=>{
@@ -4646,7 +4744,8 @@ function renderStoreCards(list, kind, categories){
       return `
       <div class="card sol-card" ${openAttr} style="cursor:pointer;position:relative;${s.archivedAt?'opacity:.55;':''}">
         <input type="checkbox" data-store-select="${s.id}" ${ui.storeSelected.has(s.id)?'checked':''} style="position:absolute;top:12px;left:12px;">
-        <div class="row" style="justify-content:space-between;margin-bottom:8px;padding-left:22px;">
+        ${storeThumbCell(s)}
+        <div class="row" style="justify-content:space-between;margin:8px 0;padding-left:22px;">
           <span class="chip chip-teal">${esc((kind==='product'&&s.tag) || categoryName(categories, s.categoryId) || 'General')}</span>
           <span class="chip ${statusChipClass(s.status||'Active')}">${esc(s.status||'Active')}</span>
         </div>
@@ -4912,8 +5011,8 @@ function openUploadTemplateModal(){
   openModal(`
     <h3>Upload template</h3>
     <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">
-      .html or .docx. Use <code>{{token}}</code> placeholders anywhere in the file — you'll map each one below.
-      .docx line items render as one plain line per item, not a real Word table — a real table needs a heavier templating model this app doesn't use.
+      .html or .docx. Type <code>{{token}}</code> placeholders into the file yourself first — this can't guess where to put data in a plain invoice with no placeholders, only fill in ones you've marked. You'll map each detected token to a field below.
+      For a real Word table of line items: put one set of tokens (e.g. <code>{{n}}</code>, <code>{{desc}}</code>, <code>{{qty}}</code>, <code>{{price}}</code>, <code>{{amount}}</code>) in a single table row, then map each to the matching "[.docx table row]" field — that row repeats once per line item automatically. The plain "Line items table" field is a fallback for templates with no native table.
     </p>
     <div class="field"><label>Name</label><input id="mName" placeholder="e.g. Standard Quote"></div>
     <div class="field"><label>Type</label><select id="mKind"><option>Quote</option><option>Proforma</option><option>Commercial</option></select></div>
@@ -5244,8 +5343,9 @@ function bindQuoteDrawer(q, tpl){
     if (!QUOTE_EDITOR.templateBuffer){ toast('Template file not loaded — try reopening this quote'); return; }
     const co = companyById(q.companyId);
     const fieldValues = buildQuoteFieldValues({ quote: q, lineItems: QUOTE_EDITOR.lineItems, companyName: co?co.name:'', preparedBy: currentUserName(), format: 'plain' });
+    const itemRows = buildQuoteItemRows(QUOTE_EDITOR.lineItems, q.currency);
     let bytes;
-    try{ bytes = renderDocx(QUOTE_EDITOR.templateBuffer, tpl.fieldMap, fieldValues); }
+    try{ bytes = renderDocx(QUOTE_EDITOR.templateBuffer, tpl.fieldMap, fieldValues, itemRows); }
     catch(e){ toast('Could not render .docx — ' + (e.message || 'try again')); return; }
     downloadFile(
       `${q.kind.toLowerCase()}-${q.quoteNumber || q.id.slice(0,8)}.docx`, bytes,
@@ -5370,10 +5470,60 @@ function openRfqItemsTableModal(r){
   }, { wide: true });
 }
 
-function renderRfqs(){
-  if (!RFQ_DATA.loaded) return `<div class="empty" style="padding:14px;">${ICONS.empty}<div>Loading…</div></div>`;
-  const list = RFQ_DATA.rfqs;
-  if (!list.length) return `<div class="empty">${ICONS.empty}<div>No RFQs yet — click "New RFQ" to add one.</div></div>`;
+// RLS already only ever returns branches this viewer is allowed to see
+// (their own, or any if admin) — this just splits the tab, it isn't itself
+// a privacy boundary.
+function rfqTabItems(){
+  return RFQ_DATA.rfqs.filter(r=> ui.rfqTab==='branches' ? !!r.parentRfqId : !r.parentRfqId);
+}
+
+// path -> data URL | null (render failed/not a PDF) | 'loading'. Module-
+// level and session-scoped, same spirit as TEAM_ROSTER — a thumbnail never
+// changes for a given stored file, so there's nothing to invalidate.
+const RFQ_THUMB_CACHE = new Map();
+function loadRfqThumbnail(path){
+  if (RFQ_THUMB_CACHE.has(path)) return;
+  RFQ_THUMB_CACHE.set(path, 'loading');
+  // pdfjs-dist is large (~1MB incl. its worker) — dynamically imported, not
+  // a top-level import, so it only ever downloads for someone who actually
+  // opens RFQ Manager's card view on an RFQ with a PDF attached, instead of
+  // doubling every user's initial page-load size.
+  Promise.all([downloadArrayBuffer(path), import('./pdfThumb.js')])
+    .then(([buf, mod])=>mod.renderPdfThumbnail(buf))
+    .then(dataUrl=>{ RFQ_THUMB_CACHE.set(path, dataUrl); renderView(); })
+    .catch(()=>{ RFQ_THUMB_CACHE.set(path, null); renderView(); });
+}
+function rfqThumbCell(r){
+  if (!r.documentPath) return `<div class="rfq-thumb rfq-thumb-empty">${ICONS.doc}</div>`;
+  const isPdf = /\.pdf$/i.test(r.documentName || r.documentPath);
+  if (!isPdf) return `<div class="rfq-thumb rfq-thumb-empty">${ICONS.doc}<span class="sub">${esc((r.documentName||'').split('.').pop()?.toUpperCase()||'FILE')}</span></div>`;
+  const cached = RFQ_THUMB_CACHE.get(r.documentPath);
+  if (cached === undefined) loadRfqThumbnail(r.documentPath);
+  if (cached && cached !== 'loading') return `<img class="rfq-thumb" src="${cached}" alt="">`;
+  if (cached === null) return `<div class="rfq-thumb rfq-thumb-empty">${ICONS.doc}</div>`; // render failed
+  return `<div class="rfq-thumb rfq-thumb-empty">${ICONS.doc}</div>`; // still loading
+}
+function renderRfqCards(list){
+  if (!list.length) return `<div class="empty">${ICONS.empty}<div>No RFQs here.</div></div>`;
+  return `<div class="sol-grid">
+    ${list.map(r=>{
+      const co = companyById(r.companyId);
+      return `
+      <div class="card sol-card" data-open-rfq="${r.id}" style="cursor:pointer;">
+        ${rfqThumbCell(r)}
+        <div class="row" style="justify-content:space-between;margin:8px 0;">
+          <span class="chip ${rfqStatusChipClass(r.status)}">${esc(rfqStatusLabel(r.status))}</span>
+          ${r.parentRfqId?`<span class="chip chip-low" style="font-size:9px;">Branch</span>`:''}
+        </div>
+        <h3>${esc(r.title)}</h3>
+        <div class="sub">${co?esc(co.name):'No client yet'}</div>
+        <div class="adopters">${r.assignedTo?esc(teammateName(r.assignedTo)):'Unassigned'}</div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+function renderRfqTable(list){
+  if (!list.length) return `<div class="empty">${ICONS.empty}<div>No RFQs here.</div></div>`;
   return `
   <div class="card tablewrap">
     <table>
@@ -5382,7 +5532,7 @@ function renderRfqs(){
         ${list.map(r=>{
           const co = companyById(r.companyId);
           return `<tr data-open-rfq="${r.id}" style="cursor:pointer;">
-            <td class="name-cell">${esc(r.title)}${r.parentRfqId?' <span class="sub">(branch)</span>':''}${r.documentPath?` <span class="sub" title="Document attached: ${esc(r.documentName)}">${ICONS.clip}</span>`:''}</td>
+            <td class="name-cell">${esc(r.title)}${r.parentRfqId?' <span class="chip chip-low" style="font-size:9px;">Branch</span>':''}${r.documentPath?` <span class="sub" title="Document attached: ${esc(r.documentName)}">${ICONS.clip}</span>`:''}</td>
             <td>${co?esc(co.name):'<span class="sub">—</span>'}</td>
             <td><span class="chip ${rfqStatusChipClass(r.status)}">${esc(rfqStatusLabel(r.status))}</span></td>
             <td>${r.assignedTo?esc(teammateName(r.assignedTo)):'<span class="sub">unassigned</span>'}</td>
@@ -5392,6 +5542,25 @@ function renderRfqs(){
       </tbody>
     </table>
   </div>`;
+}
+function renderRfqs(){
+  if (!RFQ_DATA.loaded) return `<div class="empty" style="padding:14px;">${ICONS.empty}<div>Loading…</div></div>`;
+  if (!RFQ_DATA.rfqs.length) return `<div class="empty">${ICONS.empty}<div>No RFQs yet — click "New RFQ" to add one.</div></div>`;
+  const list = rfqTabItems();
+  return `
+    <div class="toolbar">
+      <div class="seg">
+        <button data-rfq-tab="general" class="${ui.rfqTab==='general'?'active':''}">General</button>
+        <button data-rfq-tab="branches" class="${ui.rfqTab==='branches'?'active':''}">Branches <span class="sub">(private)</span></button>
+      </div>
+      <div class="seg" style="margin-left:12px;">
+        <button data-rfq-layout="table" class="${ui.rfqLayout==='table'?'active':''}">Table</button>
+        <button data-rfq-layout="cards" class="${ui.rfqLayout==='cards'?'active':''}">Cards</button>
+      </div>
+      ${ui.rfqTab==='branches' ? `<p class="sub" style="margin-left:12px;">Only you (and admins) can see branches you created — everyone else only sees General.</p>` : ''}
+    </div>
+    ${ui.rfqLayout==='cards' ? renderRfqCards(list) : renderRfqTable(list)}
+  `;
 }
 
 function openAddRfqModal(){
@@ -5584,7 +5753,7 @@ function renderRfqDrawer(){
 
       <div class="dsec">
         <div class="dsec-head"><h4>Branch &amp; export</h4></div>
-        <p class="sub" style="margin-bottom:8px;">Branch continues this RFQ's research as a new draft, leaving this one untouched. Export builds (or reopens) a client quote from these items — vendor names and the verified badge stay internal, they're never included in the export.</p>
+        <p class="sub" style="margin-bottom:8px;">Branch continues this RFQ's research as a new draft, leaving this one untouched — the branch is private (only you and admins can see it, under the RFQ Manager's "Branches" tab). Export builds (or reopens) a client quote from these items — vendor names and the verified badge stay internal, they're never included in the export.</p>
         <div class="small-btn-row">
           <button class="btn btn-sm btn-ghost" id="branchRfqBtn">Branch</button>
           <button class="btn btn-sm btn-primary" id="exportRfqBtn">${linkedQuote?'Open linked quote':'Export as Quote/Commercial'}</button>
@@ -5751,6 +5920,8 @@ function bindRfqsControls(){
   document.querySelectorAll('[data-open-rfq]').forEach(el=>el.addEventListener('click', ()=>openRfqDrawer(el.dataset.openRfq)));
   const addRfqBtn = document.getElementById('addRfqBtn');
   if (addRfqBtn) addRfqBtn.addEventListener('click', openAddRfqModal);
+  document.querySelectorAll('[data-rfq-tab]').forEach(b=>b.addEventListener('click', ()=>{ ui.rfqTab=b.dataset.rfqTab; renderView(); }));
+  document.querySelectorAll('[data-rfq-layout]').forEach(b=>b.addEventListener('click', ()=>{ ui.rfqLayout=b.dataset.rfqLayout; renderView(); }));
 }
 
 /* ============================================================
@@ -5975,8 +6146,8 @@ function openBulkUploadCompaniesModal(){
     <h3>Bulk upload accounts</h3>
     <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">
       CSV only — export/save your Excel sheet as .csv first. Header row required: <code>name</code>.
-      Optional: <code>type, sector, priority, stage, summary</code>.
-      priority: high/medium/low (default medium). stage: ${STAGES.map(s=>s.id).join('/')} (default research).
+      Optional: <code>type, sector, country, website, priority, stage, summary</code>.
+      country: a 2-letter code (NG, US…). priority: high/medium/low (default medium). stage: ${STAGES.map(s=>s.id).join('/')} (default research).
       Every row starts <b>personal</b> to you, same as adding one by hand — share to General afterwards if needed.
     </p>
     <div class="field"><input type="file" id="mFile" accept=".csv,text/csv"></div>
@@ -6006,6 +6177,7 @@ function openBulkUploadCompaniesModal(){
         if (stageRaw && !STAGES.some(s=>s.id===stageRaw)) errors.push(`invalid stage "${r.stage}"`);
         return {
           name, type: (r.type||'').trim(), sector: (r.sector||'').trim(),
+          country: (r.country||'').trim().slice(0,3).toUpperCase(), website: (r.website||'').trim(),
           priority, stage, summary: (r.summary||'').trim(),
           painPoints: [], currentSolutions: [], errors,
         };
@@ -6016,11 +6188,13 @@ function openBulkUploadCompaniesModal(){
       preview.innerHTML = `
         <div class="tablewrap" style="max-height:240px;overflow-y:auto;margin-top:10px;">
           <table>
-            <thead><tr><th>Name</th><th>Type</th><th>Priority</th><th>Stage</th><th>Status</th></tr></thead>
+            <thead><tr><th>Name</th><th>Type</th><th>Sector</th><th>Country</th><th>Priority</th><th>Stage</th><th>Status</th></tr></thead>
             <tbody>
               ${parsed.map(r=>`<tr>
                 <td>${esc(r.name||'—')}</td>
                 <td>${esc(r.type||'—')}</td>
+                <td>${esc(r.sector||'—')}</td>
+                <td>${esc(r.country||'—')}</td>
                 <td>${esc(r.priority)}</td>
                 <td>${esc(r.stage)}</td>
                 <td>${r.errors.length ? `<span class="chip chip-high">${esc(r.errors.join('; '))}</span>` : `<span class="chip chip-good">ok</span>`}</td>
@@ -6057,7 +6231,8 @@ function openBulkUploadContactsModal(){
     <h3>Bulk upload contacts</h3>
     <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;">
       CSV only — export/save your Excel sheet as .csv first. Header row required: <code>company, name</code>.
-      Optional: <code>position, email, phone, linkedin</code>.
+      Optional: <code>position, email, phone, linkedin, sector, country</code>.
+      sector/country apply only when that company is newly created (never overwrite an existing company's data) — country is a 2-letter code (NG, US…).
       A company name that doesn't already exist is created automatically (personal to you, same as adding one by hand).
     </p>
     <div class="field"><input type="file" id="mFile" accept=".csv,text/csv"></div>
@@ -6084,6 +6259,7 @@ function openBulkUploadContactsModal(){
         const existing = companyByName(companyName);
         return {
           companyName, willCreateCompany: !!companyName && !existing,
+          companySector: (r.sector||'').trim(), companyCountry: (r.country||'').trim().slice(0,3).toUpperCase(),
           name, pos: (r.position||r.job_title||'').trim(),
           email: (r.email||'').trim(), phone: (r.phone||'').trim(),
           linkedin: normalizeLinkedin(r.linkedin||''),
@@ -6097,10 +6273,12 @@ function openBulkUploadContactsModal(){
       preview.innerHTML = `
         <div class="tablewrap" style="max-height:240px;overflow-y:auto;margin-top:10px;">
           <table>
-            <thead><tr><th>Company</th><th>Name</th><th>Position</th><th>Email</th><th>Status</th></tr></thead>
+            <thead><tr><th>Company</th><th>Sector</th><th>Country</th><th>Name</th><th>Position</th><th>Email</th><th>Status</th></tr></thead>
             <tbody>
               ${parsed.map(r=>`<tr>
                 <td>${esc(r.companyName||'—')}${r.willCreateCompany?` <span class="chip chip-teal" style="font-size:9px;">new</span>`:''}</td>
+                <td>${esc(r.companySector||'—')}</td>
+                <td>${esc(r.companyCountry||'—')}</td>
                 <td>${esc(r.name||'—')}</td>
                 <td>${esc(r.pos||'—')}</td>
                 <td>${esc(r.email||'—')}</td>
@@ -6118,14 +6296,15 @@ function openBulkUploadContactsModal(){
       if (!valid.length) return;
       saveBtn.disabled = true;
       try{
-        // One company per distinct name, not one per contact row.
-        const toCreate = [...new Map(valid.filter(r=>r.willCreateCompany).map(r=>[r.companyName.toLowerCase(), r.companyName])).values()];
+        // One company per distinct name, not one per contact row — sector/
+        // country come from that company's first row in the file.
+        const toCreate = [...new Map(valid.filter(r=>r.willCreateCompany).map(r=>[r.companyName.toLowerCase(), r])).values()];
         const createdCompanies = toCreate.length
-          ? await companiesApi.bulkCreate(toCreate.map(name=>({ name, type:'', sector:'', priority:'medium', stage:'research', summary:'', painPoints:[], currentSolutions:[] })))
+          ? await companiesApi.bulkCreate(toCreate.map(r=>({ name: r.companyName, type:'', sector: r.companySector, country: r.companyCountry, priority:'medium', stage:'research', summary:'', painPoints:[], currentSolutions:[] })))
           : [];
         DATA.companies.push(...createdCompanies);
 
-        const contactRows = valid.map(({errors, willCreateCompany, companyName, ...r})=>{
+        const contactRows = valid.map(({errors, willCreateCompany, companyName, companySector, companyCountry, ...r})=>{
           const co = companyByName(companyName);
           return { ...r, companyId: co ? co.id : '' };
         }).filter(r=>r.companyId);

@@ -18,6 +18,7 @@ export function companyFromRow(row) {
   return {
     id: row.id, name: row.name, type: row.type || '',
     priority: row.priority, stage: row.stage, sector: row.sector || '',
+    country: row.country || '', website: row.website || '',
     summary: row.summary || '', notes: row.notes || '',
     painPoints: arr(row.pain_points), currentSolutions: arr(row.current_solutions),
     ownerId: row.owner_id || '', assignedTo: row.assigned_to || '', visibility: row.visibility || 'general',
@@ -147,7 +148,7 @@ export function activityFromRow(row) {
 export function companyToRow(c) {
   return {
     name: c.name, type: c.type || null, priority: c.priority, stage: c.stage,
-    sector: c.sector || null,
+    sector: c.sector || null, country: c.country || null, website: c.website || null,
     summary: c.summary || null, notes: c.notes || null,
     pain_points: c.painPoints || [], current_solutions: c.currentSolutions || [],
   };
@@ -202,7 +203,7 @@ export function rfqFromRow(row) {
   return {
     id: row.id, title: row.title, reference: row.reference || '', companyId: row.company_id || '',
     status: row.status, assignedTo: row.assigned_to || '', parentRfqId: row.parent_rfq_id || '',
-    notes: row.notes || '', createdAt: row.created_at || '',
+    notes: row.notes || '', createdAt: row.created_at || '', createdBy: row.created_by || '',
     documentPath: row.document_path || '', documentName: row.document_name || '',
   };
 }

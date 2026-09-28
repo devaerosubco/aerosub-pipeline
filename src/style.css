@@ -475,6 +475,16 @@ button:focus-visible{outline-offset:1px;}
   color:var(--ink);
   font-size:12px;
 }
+.chip-toggle{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:6px 10px;
+  border:1px solid var(--line-strong);border-radius:8px;
+  background:var(--surface-raised);
+  font-size:11.5px;color:var(--muted);
+  cursor:pointer;user-select:none;
+}
+.chip-toggle:has(input:checked){background:var(--teal);color:var(--teal-ink);border-color:var(--teal);font-weight:600;}
+.chip-toggle input{margin:0;}
 
 /* ---------- Kanban ---------- */
 .board{display:flex;gap:12px;overflow-x:auto;padding-bottom:14px;}
@@ -679,6 +689,20 @@ td .sub{font-size:11px;color:var(--muted);font-weight:400;}
 .sol-card h3{font-size:13.5px;margin-bottom:6px;}
 .sol-card p{font-size:12.3px;color:var(--muted);line-height:1.55;margin-bottom:10px;}
 .sol-card .adopters{font-size:11px;color:var(--faint);font-family:var(--font-mono);}
+.rfq-thumb{
+  width:100%;height:140px;object-fit:cover;object-position:top;
+  border-radius:6px;background:var(--surface-sunken);
+  border:1px solid var(--line);
+}
+.rfq-thumb-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:var(--faint);}
+.rfq-thumb-empty svg{width:28px;height:28px;}
+.store-thumb{
+  width:100%;height:120px;object-fit:cover;
+  border-radius:6px;background:var(--surface-sunken);
+  border:1px solid var(--line);
+}
+.store-thumb-empty{display:flex;align-items:center;justify-content:center;color:var(--faint);}
+.store-thumb-empty svg{width:26px;height:26px;}
 
 /* ============================================================
    REPORT BUILDER

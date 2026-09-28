@@ -726,3 +726,94 @@ a real-browser pass (18 checks, run 3x clean) covering attach-at-create,
 view (inline) vs download (original filename), in-table edits persisting,
 totals, the full-table modal + CSV, replace/remove deleting the old
 storage object, and RFQ delete cleaning up its file.
+
+**Addendum, 2026-09-28 — quick-fix batch (Contacts filters/upload, RFQ cards
++ branch privacy, docx repeating-row fix, Store thumbnails).** User asked
+for 5 items; item 4 (a full in-document editor — charts, watermark,
+header/footer, pagination, text boxes, signature pads) was scoped out as a
+multi-week build of its own, not a quick fix — deferred to a dedicated
+design pass rather than attempted here.
+
+1. **Contacts filtering** — Location (`companies.country`), Sector
+   (`companies.sector`, already existed), With email / With LinkedIn / With
+   website (`companies.website`, new), all as toolbar filters
+   (`ui.contactFilter`) above the Contacts table, plus a "Clear filters"
+   button. New Sector/Location columns, both sortable via the existing
+   `sortTh`/`sortRows` helpers.
+2. **Contacts/Companies bulk upload** gained `sector`/`country`/`website`
+   CSV columns (`20260928130001_company_country_website.sql`) — applied to
+   a company only when it's newly auto-created by the contacts upload
+   (never overwrites an existing company's data). Country is a loosely
+   validated (≤3 char) code, uppercased client-side.
+3. **RFQ Manager**:
+   - **Card view + PDF thumbnail**: a Cards/Table toggle (mirrors Store's),
+     cards render an actual first-page PDF thumbnail via `pdfjs-dist`
+     (`src/pdfThumb.js`) — dynamically `import()`ed only when a card view
+     with a PDF is actually opened, not a top-level import, so it doesn't
+     double every user's initial page-load size (~1MB incl. its worker).
+     Non-PDF attachments (Word/Excel) show a generic file icon instead.
+   - **Branch privacy** (`20260928140001_rfq_branch_visibility.sql`): a
+     branched RFQ (`parent_rfq_id` set) is now visible only to its creator
+     and admins — a new `rfq_visible()` helper function backing bespoke
+     SELECT/UPDATE/DELETE policies on both `rfqs` and `rfq_items` (same
+     "UPDATE/DELETE gated the same as SELECT" rule HT-F established).
+     `rfqs.created_by` gained a `default auth.uid()` it never had (needed
+     something for the policy to compare against). RFQ Manager gained a
+     General/Branches tab so this is actually reachable in the UI.
+     ↳ **security bug found and fixed during this same session's RLS
+     testing**: the first version of `rfq_visible()` didn't call
+     `is_member()` at all — a profile-less authenticated session (a real
+     auth account with no `profiles` row, i.e. not a team member) could
+     have read every non-branch RFQ, since `parent_rfq_id is null` alone
+     was true for anyone. Caught by the existing "profile-less session
+     reads 0 rows from every table" test going from 30/30 to 29/30 the
+     moment branch-visibility tests were added; fixed by requiring
+     `is_member()` unconditionally, branch check second.
+   - **Fixed the actual docx bug behind "Quote template is not working,
+     data's and items are not yet added to the doc file"**: the user's
+     real uploaded template turned out to have zero `{{token}}`
+     placeholders anywhere — a genuine AEROSUB invoice with a native Word
+     table (S/N | Description | UoM | Qty | Unit Price | Amount) and one
+     blank row. No substitution engine can guess where to put data in
+     unmarked static text; found this by downloading and inspecting the
+     user's actual stored template file directly. What WAS a real,
+     fixable gap: `src/docx.js` could only ever fill *one* table row, never
+     repeat it per line item, and its token substitution used a naive
+     whole-string search that misses a `{{token}}` Word has split across
+     adjacent `<w:t>` runs (common after autocorrect/spell-check) — both
+     rewritten: `extractRuns()`/`substituteRunTokens()` now walk the
+     *concatenated* text across runs to find and replace tokens correctly
+     regardless of run-splitting, and any table row containing a token
+     mapped to one of 6 new `item_*` `QUOTE_FIELDS` entries
+     (`item_n`/`item_description`/`item_qty`/`item_unit_cost`/
+     `item_unit_price`/`item_line_total`) is cloned once per line item.
+     `quoteFields.js` gained `buildQuoteItemRows()` to produce the
+     pre-formatted per-row values. Verified against the user's *actual*
+     template file (downloaded from storage, tokens inserted the way a
+     real Word edit would produce them, rendered with 2 fake line items,
+     re-parsed and checked) — 8/8 checks, both items appeared correctly
+     with their own qty/price in the real invoice's real table structure.
+4. **Store card thumbnails**: product/service cards now show the first
+   uploaded image as a thumbnail (`storeThumbCell()`/`STORE_THUMB_CACHE`,
+   same lazy signed-URL-cache pattern as the RFQ PDF thumbnails). The
+   drawer's image list gained a "★ Feature" button per non-first image to
+   reorder which one is featured (index 0 = the card thumbnail).
+   ↳ **real bug found and fixed**: `closeDrawer()` never re-rendered the
+   view behind it — any drawer action that only called its own
+   `render*Drawer()` (adding/removing a product/service image, pre-dating
+   this session) left the underlying list/grid stale until some unrelated
+   event happened to trigger a re-render. Invisible before (nothing on the
+   card depended on drawer-only data), it became visibly broken the moment
+   cards started showing an image. Fixed at the source — `closeDrawer()`
+   now calls `renderView()` itself — rather than patching every individual
+   drawer save handler; confirmed via an isolated real-browser session
+   (no confounding async work) that the thumbnail now appears in ~17ms
+   with no manual nudge needed, vs. never appearing within 30s before.
+
+Verified: vitest 124/124 (new: docx run-splitting + repeating-row tests,
+company country/website round-trip); `db:check`/`test:rls` 139/139 (new:
+RFQ branch-visibility RLS incl. the security-bug catch above, company
+country/website member-editability, new-table/column assertions); two
+real-browser passes (one deep, template-specific docx verification; one
+broad pass covering filters, bulk upload, RFQ cards/branches/thumbnails,
+and Store thumbnails, 14/14 across two members in separate sessions).

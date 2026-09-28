@@ -37,6 +37,18 @@ describe('companies', () => {
     expect(back.sector).toBe('');
   });
 
+  it('round-trips country + website (quick fix items 1+2)', () => {
+    const row = companyToRow({ name: 'X', country: 'NG', website: 'example.com' });
+    expect(row.country).toBe('NG');
+    expect(row.website).toBe('example.com');
+    const back = companyFromRow({ id: 'x', name: 'X', country: 'NG', website: 'example.com' });
+    expect(back.country).toBe('NG');
+    expect(back.website).toBe('example.com');
+    // missing -> null on the way in, '' on the way out (same convention as sector)
+    expect(companyToRow({ name: 'X' }).country).toBeNull();
+    expect(companyFromRow({ id: 'x', name: 'X' }).country).toBe('');
+  });
+
   it('maps visibility/owner_id/assigned_to (V2 HT-F) — companyToRow never emits them (DB-defaulted/admin-set)', () => {
     const c = companyFromRow({ id: 'x', name: 'X', owner_id: 'u1', assigned_to: 'u2', visibility: 'personal' });
     expect(c.ownerId).toBe('u1');

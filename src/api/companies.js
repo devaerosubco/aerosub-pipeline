@@ -20,12 +20,14 @@ export async function bulkCreate(rows) {
   return saved.map(companyFromRow);
 }
 
-export async function updateIdentity(id, { name, type, summary, sector }) {
+export async function updateIdentity(id, { name, type, summary, sector, country, website }) {
   const row = {};
   if (name !== undefined) row.name = name;
   if (type !== undefined) row.type = type || null;
   if (summary !== undefined) row.summary = summary || null;
   if (sector !== undefined) row.sector = sector || null;
+  if (country !== undefined) row.country = country || null;
+  if (website !== undefined) row.website = website || null;
   await write('companies', 'update', { row, match: { id } });
 }
 
